@@ -151,9 +151,9 @@ Custom import was exercised on MuMu with a renamed MOSS-TTS-Nano GGUF. The app d
 
 An `asr/offline` capability replaces the synthesis controls with a WAV picker and a selectable transcript. The same WAV reader supplies interleaved float PCM to `audiocpp_request_set_audio()`, and `audiocpp_result_text()` returns the final text. The request/session/load option path is shared with synthesis, so ASR-specific controls such as `max_tokens` and `instruct` are discovered rather than hardcoded.
 
-MOSS-Transcribe-Diarize accepts 16 kHz PCM directly. Its non-16-kHz path requires SOXR; without a packaged `libsoxr`, the demo reports the model's explicit error instead of silently using a lower-quality fallback. Convert input to 16 kHz PCM for this default APK, or package a compatible Android `libsoxr` after validating that dependency separately.
+Before calling MOSS-Transcribe-Diarize, the JNI bridge mixes mono or multichannel PCM WAV input to mono and converts it to 16 kHz with its built-in linear resampler. This makes non-16-kHz WAV input self-contained in the demo and avoids the model's SOXR-only non-16-kHz path. The lightweight linear converter is a demo convenience; integrations requiring higher-quality resampling can still package and validate SOXR separately.
 
-The final APK was tested on MuMu with a 7.616-second, 16 kHz mono Chinese WAV. It returned `[0.06][S01]它的目标是模拟、延伸和扩展人的智能，让机器能够胜任通常需要人类智慧才能完成的任务。[7.52]`. The UI reported 234.0 seconds including session setup, while the native session took 229.7 seconds and generated 39 tokens. A sampled ASR memory reading was approximately 2.9 GB PSS / 3.0 GB RSS. An initial 48 kHz stereo attempt produced the explicit SOXR requirement described above; it was not counted as a successful ASR run.
+The final APK was tested on MuMu with a 7.616-second, 16 kHz mono Chinese WAV. It returned `[0.06][S01]它的目标是模拟、延伸和扩展人的智能，让机器能够胜任通常需要人类智慧才能完成的任务。[7.52]`. The UI reported 234.0 seconds including session setup, while the native session took 229.7 seconds and generated 39 tokens. A sampled ASR memory reading was approximately 2.9 GB PSS / 3.0 GB RSS. After adding the built-in converter, the original 7.616-second, 48 kHz stereo WAV was converted from 365,568 stereo frames to 121,856 mono frames and returned the same transcript in 108.6 seconds without SOXR.
 
 ## On-device smoke test
 

@@ -34,6 +34,38 @@ struct OptionInput {
     std::string value;
 };
 
+std::vector<float> convert_asr_wav_to_16k_mono(const engine::audio::WavData & wav) {
+    if (wav.sample_rate <= 0 || wav.channels <= 0 || wav.samples.empty() ||
+        wav.samples.size() % static_cast<size_t>(wav.channels) != 0) {
+        throw std::runtime_error("输入音频没有有效的 PCM 内容");
+    }
+    const size_t input_frames = wav.samples.size() / static_cast<size_t>(wav.channels);
+    std::vector<float> mono(input_frames, 0.0F);
+    for (size_t frame = 0; frame < input_frames; ++frame) {
+        double sum = 0.0;
+        for (int channel = 0; channel < wav.channels; ++channel) {
+            sum += wav.samples[frame * static_cast<size_t>(wav.channels) + channel];
+        }
+        mono[frame] = static_cast<float>(sum / wav.channels);
+    }
+    if (wav.sample_rate == 16000) {
+        return mono;
+    }
+
+    constexpr int target_rate = 16000;
+    const double scale = static_cast<double>(target_rate) / wav.sample_rate;
+    const size_t output_frames = static_cast<size_t>(std::llround(input_frames * scale));
+    std::vector<float> output(output_frames, 0.0F);
+    for (size_t frame = 0; frame < output_frames; ++frame) {
+        const double position = frame / scale;
+        const size_t left = static_cast<size_t>(std::floor(position));
+        const size_t right = std::min(left + 1, input_frames - 1);
+        const float fraction = static_cast<float>(position - left);
+        output[frame] = mono[left] * (1.0F - fraction) + mono[right] * fraction;
+    }
+    return output;
+}
+
 std::string status_error(audiocpp_status status, const char * operation) {
     std::string message = operation;
     message += ": ";
@@ -574,7 +606,9 @@ Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
         if (wav.samples.empty() || wav.channels <= 0 || wav.sample_rate <= 0) {
             throw std::runtime_error("输入音频没有有效的 PCM 内容");
         }
-        const size_t frames = wav.samples.size() / static_cast<size_t>(wav.channels);
+        const size_t input_frames = wav.samples.size() / static_cast<size_t>(wav.channels);
+        const auto samples = convert_asr_wav_to_16k_mono(wav);
+        const size_t frames = samples.size();
 
         std::lock_guard<std::mutex> lock(g_mutex);
         ensure_session(model.value, "asr", threads, inputs);
@@ -582,12 +616,11 @@ Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
         if (request.value == nullptr) {
             throw std::runtime_error("创建识别请求失败");
         }
-        check(audiocpp_request_set_audio(request.value, wav.samples.data(), frames,
-                                         wav.sample_rate, wav.channels),
+        check(audiocpp_request_set_audio(request.value, samples.data(), frames, 16000, 1),
               "设置识别音频");
         __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
-                            "ASR input: %zu frames, %d Hz, %d channels",
-                            frames, wav.sample_rate, wav.channels);
+                            "ASR input: %zu frames, %d Hz, %d channels -> %zu frames, 16000 Hz, mono",
+                            input_frames, wav.sample_rate, wav.channels, frames);
         for (const auto & input : inputs) {
             if (input.scope == AUDIOCPP_OPTION_SCOPE_REQUEST) {
                 check(audiocpp_request_set_option(request.value, input.key.c_str(), input.value.c_str()),

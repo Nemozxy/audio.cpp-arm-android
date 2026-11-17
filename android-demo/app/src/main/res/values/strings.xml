@@ -20,7 +20,7 @@
     <string name="reference_selected">已选择：%1$s\n下次合成将使用语音克隆</string>
     <string name="reference_copying">正在复制参考音频…</string>
     <string name="asr_input_title">输入音频</string>
-    <string name="asr_input_help">选择 PCM WAV 文件。识别结果可包含时间戳和说话人标签，具体取决于模型。</string>
+    <string name="asr_input_help">选择 PCM WAV 文件，单声道或双声道均可；非 16 kHz 音频会自动重采样。识别结果可包含时间戳和说话人标签，具体取决于模型。</string>
     <string name="select_asr_audio">选择要识别的 WAV</string>
     <string name="asr_audio_empty">尚未选择音频</string>
     <string name="asr_audio_selected">已选择：%1$s</string>

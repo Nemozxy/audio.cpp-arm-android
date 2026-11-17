@@ -137,7 +137,7 @@ With a reference selected, the demo creates a `clon/offline` session when the mo
 
 For a model that reports `asr/offline`, the demo replaces the synthesis controls with a WAV picker and transcript view. JNI decodes the PCM through audio.cpp's WAV reader, passes it to `audiocpp_request_set_audio()`, and reads the final transcript through `audiocpp_result_text()`. MOSS-Transcribe-Diarize can return timestamps and speaker labels in this text.
 
-Only one model and session are retained. Switching bundled or imported models releases the previous session and model before loading the next one, avoiding simultaneous TTS and ASR model residency. The default MOSS ASR path accepts 16 kHz PCM directly; other sample rates require a packaged `libsoxr`, which this demo does not currently bundle.
+Only one model and session are retained. Switching bundled or imported models releases the previous session and model before loading the next one, avoiding simultaneous TTS and ASR model residency. Before ASR inference, JNI mixes mono or multichannel PCM WAV input to mono and uses the demo bridge's built-in linear resampler to convert it to 16 kHz. Non-16-kHz WAV files therefore work in the demo without a packaged `libsoxr`.
 
 ### Runtime integration notes
 
@@ -157,7 +157,7 @@ Verified in this port:
 - Chinese TTS generation in approximately 23.1 seconds, producing a non-silent 6-second, 48 kHz, stereo, 16-bit PCM WAV followed by playback.
 - Dynamic request parameters with `max_tokens=30`: the model stopped at 30 generated audio frames and produced a non-silent 2.4-second, 48 kHz, stereo, 16-bit PCM WAV (115,200 frames), followed by playback.
 - Voice cloning through the document picker with a 7.616-second Chinese reference WAV and its transcript. The native request used `clon/offline` and 365,568 reference frames, then produced and played a non-silent 4.48-second, 48 kHz stereo WAV (215,040 output frames). Removing the reference and returning to `tts/offline` also passed.
-- Final-APK ASR with MOSS-Transcribe-Diarize Q4_K and a 7.616-second, 16 kHz mono Chinese WAV. The `asr/offline` request returned the reference sentence with `[0.06][S01]` and `[7.52]` markers after 234.0 seconds in the UI (229.7 seconds in the native session). ASR memory reached approximately 2.9 GB PSS on MuMu.
+- Final-APK ASR with MOSS-Transcribe-Diarize Q4_K and a 7.616-second, 16 kHz mono Chinese WAV. The `asr/offline` request returned the reference sentence with `[0.06][S01]` and `[7.52]` markers after 234.0 seconds in the UI (229.7 seconds in the native session). ASR memory reached approximately 2.9 GB PSS on MuMu. The original 7.616-second, 48 kHz stereo WAV also passed through the built-in converter (365,568 frames to 121,856 mono frames), returned the same transcript, and completed in 108.6 seconds without SOXR.
 - Custom GGUF import through the document picker with a renamed MOSS-TTS-Nano file. The app auto-detected `moss_tts_nano`, restored its dynamic controls, synthesized and played a non-silent 8.8-second stereo WAV (422,400 frames) in 30.7 seconds, and restored the imported model after a cold restart.
 
 Not yet verified:
