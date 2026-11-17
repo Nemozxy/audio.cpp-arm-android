@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">audio.cpp TTS Demo</string>
+    <string name="title">离线语音合成</string>
+    <string name="subtitle">audio.cpp · Android ARM64</string>
+    <string name="model_name">MOSS-TTS-Nano 100M · Q8_0 · CPU</string>
+    <string name="input_label">要合成的文字</string>
+    <string name="default_text">你好，这是 audio.cpp 在安卓模拟器上的离线语音合成测试。</string>
+    <string name="synthesize">合成并播放</string>
+    <string name="play">重新播放</string>
+    <string name="loading_native">正在加载 ARM64 原生库…</string>
+    <string name="extracting_model">首次运行正在解压模型，约 185 MB，请稍候…</string>
+    <string name="model_ready">模型已就绪，可以开始合成</string>
+    <string name="working">正在本地生成语音，ARM 翻译环境下可能需要几分钟…</string>
+    <string name="offline_note">模型随 APK 提供，无需网络或额外权限。首次合成还需加载模型。</string>
+</resources>
