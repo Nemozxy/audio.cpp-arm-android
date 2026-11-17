@@ -27,8 +27,9 @@ cmake -S . -B build -DAUDIOCPP_BUILD_C_API=ON
 cmake --build build --target audiocpp
 ```
 
-This produces `libaudiocpp.so` / `libaudiocpp.dylib` / `audiocpp.dll` with
-`SOVERSION 0`. Nothing changes in a build that leaves the option off.
+This produces `libaudiocpp.so` / `libaudiocpp.dylib` / `audiocpp.dll`, with
+`SOVERSION 0` on desktop platforms. Android uses an unversioned `libaudiocpp.so`
+for APK/AAR packaging. Nothing changes in a build that leaves the option off.
 
 ## When to use it
 
