@@ -31,7 +31,7 @@
 #endif
 #include <process.h>
 #include <windows.h>
-#elif !defined(__EMSCRIPTEN__)
+#elif !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
 #include <spawn.h>
 #include <sys/wait.h>
 extern char ** environ;
@@ -379,6 +379,12 @@ int run_process(const std::string & program, const std::vector<std::string> & ar
     return static_cast<int>(rc);
 #elif defined(__EMSCRIPTEN__)
     throw std::runtime_error("external processes are unavailable in the browser: " + format_process_args(program, args));
+#elif defined(__ANDROID__)
+    // posix_spawnp is only exposed by bionic at newer API levels, and Android
+    // apps cannot assume helper executables exist. Keep API-24 CLI builds
+    // functional for native tasks and fail only workflows that request ffmpeg
+    // or another external process.
+    throw std::runtime_error("external processes are unavailable on Android: " + format_process_args(program, args));
 #else
     std::vector<char *> argv;
     argv.reserve(args.size() + 2);

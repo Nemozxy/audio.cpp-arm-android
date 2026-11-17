@@ -96,8 +96,26 @@ set(ENGINE_DEFAULT_ENABLE_METAL OFF)
 set(ENGINE_DEFAULT_ENABLE_LLAMAFILE ON)
 set(ENGINE_DEFAULT_ENABLE_CUDA_GRAPHS ON)
 set(ENGINE_DEFAULT_ENABLE_NATIVE_CPU ON)
+set(ENGINE_DEFAULT_ENABLE_OPENMP ON)
+set(ENGINE_DEFAULT_ENABLE_NEON OFF)
 if (APPLE)
     set(ENGINE_DEFAULT_ENABLE_METAL ON)
+endif()
+if (ANDROID)
+    # Cross-compiling must never probe or execute binaries on the build host.
+    # NDK OpenMP is not consistently available, and llamafile's SGEMM path is
+    # intended for desktop targets. Keep the Android baseline portable; callers
+    # can opt into a specific GGML_CPU_ARM_ARCH for a known device family.
+    set(ENGINE_DEFAULT_ENABLE_LLAMAFILE OFF)
+    set(ENGINE_DEFAULT_ENABLE_NATIVE_CPU OFF)
+    set(ENGINE_DEFAULT_ENABLE_OPENMP OFF)
+    if (CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a" OR
+        CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        set(ENGINE_DEFAULT_ENABLE_NEON ON)
+    endif()
+    # Android 15+ devices may use 16 KB pages. This remains compatible with
+    # 4 KB-page devices and applies to both the shared library and debug tools.
+    add_link_options("-Wl,-z,max-page-size=16384")
 endif()
 if (DEFINED GGML_CUDA)
     set(ENGINE_DEFAULT_ENABLE_CUDA ${GGML_CUDA})
@@ -140,11 +158,11 @@ option(ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS
 # librknnrt. The engine links the board runtime; the models themselves are
 # converted offline on x86 with rknn-toolkit2.
 option(ENGINE_ENABLE_RKNN "Build the Rockchip NPU (librknnrt) decoder path" OFF)
-option(ENGINE_ENABLE_NEON "Build opt-in NEON library and native model paths" OFF)
+option(ENGINE_ENABLE_NEON "Build opt-in NEON library and native model paths" ${ENGINE_DEFAULT_ENABLE_NEON})
 set(ENGINE_RKNN_INCLUDE_DIR "" CACHE PATH "Directory containing rknn_api.h (empty = use the system include path)")
 set(ENGINE_RKNN_LIBRARY "rknnrt" CACHE STRING "librknnrt to link (path or library name)")
 option(ENGINE_ENABLE_NATIVE_CPU "Build ggml CPU kernels with native host ISA flags" ${ENGINE_DEFAULT_ENABLE_NATIVE_CPU})
-option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ON)
+option(ENGINE_ENABLE_OPENMP "Build host code with OpenMP support" ${ENGINE_DEFAULT_ENABLE_OPENMP})
 option(AUDIOCPP_STATIC_ESPEAK "Build and statically link GPL-3.0-or-later eSpeak-ng; keep data separate" OFF)
 option(AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER
     "Build native model-manager tools and server download/install support"
@@ -401,6 +419,11 @@ set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "Do not build upstream examples" FORCE)
 set(GGML_BUILD_TESTS OFF CACHE BOOL "Do not build upstream tests" FORCE)
 set(GGML_ALL_WARNINGS OFF CACHE BOOL "Keep upstream warnings quiet in this sample" FORCE)
 set(GGML_CCACHE OFF CACHE BOOL "Do not probe for ccache in this local setup" FORCE)
+if (ANDROID AND NOT ENGINE_ENABLE_OPENMP)
+    # ggml has a separate OpenMP option. Disable it with the project-level one
+    # so an Android C API package does not acquire an undeclared libomp runtime.
+    set(GGML_OPENMP OFF CACHE BOOL "Build ggml without a separate OpenMP runtime" FORCE)
+endif()
 set(GGML_CUDA ${ENGINE_ENABLE_CUDA} CACHE BOOL "Build ggml with CUDA backend support" FORCE)
 set(GGML_HIP ${ENGINE_ENABLE_HIP} CACHE BOOL "Build ggml with HIP backend support" FORCE)
 set(GGML_VULKAN ${ENGINE_ENABLE_VULKAN} CACHE BOOL "Build ggml with Vulkan backend support" FORCE)
@@ -3232,6 +3255,10 @@ target_link_libraries(engine_runtime PUBLIC ggml)
 find_package(Threads REQUIRED)
 target_link_libraries(engine_runtime PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 target_link_libraries(engine_runtime PRIVATE sentencepiece cjson_vendor yaml_vendor)
+if (ANDROID)
+    # SentencePiece's bundled protobuf-lite writes through __android_log_write.
+    target_link_libraries(engine_runtime PRIVATE log)
+endif()
 
 option(AUDIOCPP_ZONOS3_TEXTNORM "Link Zyphra's zyphra-textnorm (Rust/cargo) for ZONOS3 text normalization" OFF)
 set(AUDIOCPP_ZONOS3_TEXTNORM_DIR "" CACHE PATH "zyphra-textnorm checkout (Cargo.toml root), e.g. ../ZONOS3/third_party/zyphra-textnorm")
@@ -3441,12 +3468,20 @@ if (AUDIOCPP_BUILD_C_API)
     )
     set_target_properties(audiocpp PROPERTIES
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-        VERSION 0.1.0
-        SOVERSION 0
         C_VISIBILITY_PRESET hidden
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
     )
+    if (NOT ANDROID)
+        # Android package managers expect an unversioned lib<name>.so rather
+        # than a SONAME symlink chain such as libaudiocpp.so.0.1.0.
+        set_target_properties(audiocpp PROPERTIES VERSION 0.1.0 SOVERSION 0)
+    endif()
+    if (ANDROID)
+        add_executable(audiocpp_android_smoke tests/capi/android_smoke.c)
+        target_link_libraries(audiocpp_android_smoke PRIVATE audiocpp)
+        set_target_properties(audiocpp_android_smoke PROPERTIES C_STANDARD 99)
+    endif()
     if (APPLE)
         set_target_properties(audiocpp PROPERTIES
             INSTALL_RPATH "@loader_path" BUILD_WITH_INSTALL_RPATH ON)

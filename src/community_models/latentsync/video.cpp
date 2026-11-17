@@ -12,7 +12,7 @@
 #include <windows.h>
 #include <fcntl.h>
 #include <io.h>
-#else
+#elif !defined(__ANDROID__)
 #include <cerrno>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -63,7 +63,7 @@ public:
             WaitForSingleObject(process_, INFINITE); CloseHandle(process_); process_ = nullptr;
             throw std::runtime_error("Cannot open LatentSync video pipe");
         }
-#else
+#elif !defined(__ANDROID__)
         int pipe_fds[2];
         if (pipe(pipe_fds) != 0) throw std::runtime_error("Cannot create LatentSync video pipe");
         posix_spawn_file_actions_t actions;
@@ -84,6 +84,10 @@ public:
         if (status != 0) { close(pipe_fds[0]); process_ = -1; throw std::runtime_error("Cannot launch FFmpeg; install it and add it to PATH for LatentSync video input"); }
         stream_ = fdopen(pipe_fds[0], "rb");
         if (!stream_) { close(pipe_fds[0]); finish(); throw std::runtime_error("Cannot open LatentSync video pipe"); }
+#else
+        (void) path;
+        (void) fps;
+        throw std::runtime_error("LatentSync video input requires FFmpeg and is unavailable on Android");
 #endif
     }
     ~VideoPipe() { finish(); }
@@ -96,20 +100,22 @@ public:
         DWORD code = 1; GetExitCodeProcess(process_, &code);
         CloseHandle(process_); process_ = nullptr;
         return static_cast<int>(code);
-#else
+#elif !defined(__ANDROID__)
         if (process_ < 0) return 0;
         int status = 0;
         pid_t result;
         do { result = waitpid(process_, &status, 0); } while (result < 0 && errno == EINTR);
         process_ = -1;
         return result >= 0 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#else
+        return 0;
 #endif
     }
 private:
     FILE * stream_ = nullptr;
 #ifdef _WIN32
     HANDLE process_ = nullptr;
-#else
+#elif !defined(__ANDROID__)
     pid_t process_ = -1;
 #endif
 };
