@@ -19,4 +19,8 @@ final class NativeTts {
     static native String synthesize(String modelPath, String text, String outputPath,
                                     String referenceAudioPath, int threads,
                                     int[] scopes, String[] keys, String[] values);
+
+    /** Returns a JSON object containing text and language; throws on failure. */
+    static native String transcribe(String modelPath, String inputAudioPath, int threads,
+                                    int[] scopes, String[] keys, String[] values);
 }

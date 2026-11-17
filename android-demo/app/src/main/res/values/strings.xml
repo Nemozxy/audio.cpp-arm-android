@@ -1,9 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">audio.cpp TTS Demo</string>
-    <string name="title">离线语音合成</string>
-    <string name="subtitle">audio.cpp · Android ARM64</string>
+    <string name="app_name">audio.cpp ARM Demo</string>
+    <string name="title">离线语音工具箱</string>
+    <string name="subtitle">audio.cpp · Android ARM64 · TTS / ASR</string>
     <string name="model_name">正在识别模型…</string>
+    <string name="builtin_tts">内置 TTS</string>
+    <string name="builtin_asr">内置 ASR</string>
+    <string name="import_gguf">导入 GGUF</string>
+    <string name="task_label">任务</string>
+    <string name="task_tts">语音合成</string>
+    <string name="task_asr">语音识别</string>
     <string name="input_label">要合成的文字</string>
     <string name="default_text">你好，这是 audio.cpp 在安卓模拟器上的离线语音合成测试。</string>
     <string name="reference_title">语音克隆（可选）</string>
@@ -13,15 +19,23 @@
     <string name="reference_empty">未选择参考音频，将使用普通 TTS</string>
     <string name="reference_selected">已选择：%1$s\n下次合成将使用语音克隆</string>
     <string name="reference_copying">正在复制参考音频…</string>
+    <string name="asr_input_title">输入音频</string>
+    <string name="asr_input_help">选择 PCM WAV 文件。识别结果可包含时间戳和说话人标签，具体取决于模型。</string>
+    <string name="select_asr_audio">选择要识别的 WAV</string>
+    <string name="asr_audio_empty">尚未选择音频</string>
+    <string name="asr_audio_selected">已选择：%1$s</string>
     <string name="parameters_title">模型参数</string>
     <string name="reset_parameters">恢复模型默认参数</string>
-    <string name="parameters_reset">已恢复默认参数，下次合成时生效</string>
+    <string name="parameters_reset">已恢复默认参数，下次推理时生效</string>
     <string name="synthesize">合成并播放</string>
+    <string name="transcribe">开始识别</string>
     <string name="play">重新播放</string>
+    <string name="transcript_title">识别结果</string>
     <string name="loading_native">正在加载 ARM64 原生库…</string>
-    <string name="extracting_model">首次运行正在解压模型，约 185 MB，请稍候…</string>
+    <string name="extracting_model">首次使用正在解压所选模型，请稍候…</string>
     <string name="detecting_model">正在自动识别模型并读取其参数…</string>
-    <string name="model_ready">模型与参数已就绪，可以开始合成</string>
+    <string name="model_ready">模型与参数已就绪，可以开始推理</string>
     <string name="working">正在本地生成语音，加载参数变化时首次合成可能需要更长时间…</string>
-    <string name="offline_note">模型随 APK 提供，无需网络或额外权限。参数由模型自动声明，无需逐项适配。</string>
+    <string name="transcribing">正在本地识别音频，大模型首次推理可能需要较长时间…</string>
+    <string name="offline_note">内置模型随 APK 提供，无需网络。自定义 GGUF 仅支持本 APK 已编译的模型 family；参数由模型自动声明。</string>
 </resources>

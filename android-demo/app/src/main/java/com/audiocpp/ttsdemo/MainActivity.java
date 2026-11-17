@@ -2,6 +2,7 @@ package com.audiocpp.ttsdemo;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.media.AudioAttributes;
@@ -11,28 +12,56 @@ import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.util.Log;
 import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final String TAG = "AudioCppDemo";
-    private static final String MODEL_ASSET = "models/moss-tts-nano-100m-q8_0.gguf";
+    private static final String TTS_MODEL_ASSET = "models/moss-tts-nano-100m-q8_0.gguf";
+    private static final String ASR_MODEL_ASSET = "models/moss-transcribe-diarize-q4_k.gguf";
+    private static final String PREFS = "model-selection";
+    private static final String PREF_MODEL_PATH = "model-path";
     private static final int REQUEST_REFERENCE_AUDIO = 42;
+    private static final int REQUEST_ASR_AUDIO = 43;
+    private static final int REQUEST_GGUF_MODEL = 44;
+
+    private static final class TaskEntry {
+        final String id;
+        final String label;
+
+        TaskEntry(String id, String label) {
+            this.id = id;
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final List<TaskEntry> tasks = new ArrayList<>();
 
     private EditText inputText;
     private Button synthesizeButton;
@@ -40,19 +69,38 @@ public final class MainActivity extends Activity {
     private Button resetOptionsButton;
     private Button selectReferenceButton;
     private Button clearReferenceButton;
+    private Button selectAsrAudioButton;
+    private Button builtinTtsButton;
+    private Button builtinAsrButton;
+    private Button importModelButton;
     private ProgressBar progress;
     private TextView modelName;
     private TextView modelStatus;
     private TextView referenceStatus;
+    private TextView asrAudioStatus;
     private TextView statusText;
+    private TextView transcriptTitle;
+    private TextView transcriptText;
     private LinearLayout referenceSection;
+    private LinearLayout ttsInputSection;
+    private LinearLayout asrInputSection;
+    private Spinner taskSpinner;
     private ParameterPanel parameterPanel;
     private File modelFile;
+    private File ttsModelFile;
+    private File asrModelFile;
     private File wavFile;
     private File referenceFile;
+    private File asrAudioFile;
     private String referenceName;
+    private String asrAudioName;
+    private String nativeVersion = "";
+    private String modelFamily = "";
     private MediaPlayer player;
     private boolean modelReady;
+    private boolean busy;
+    private boolean supportsTts;
+    private boolean supportsClon;
     private boolean speakerReferenceSupported;
 
     @Override
@@ -66,124 +114,279 @@ public final class MainActivity extends Activity {
         resetOptionsButton = findViewById(R.id.resetOptionsButton);
         selectReferenceButton = findViewById(R.id.selectReferenceButton);
         clearReferenceButton = findViewById(R.id.clearReferenceButton);
+        selectAsrAudioButton = findViewById(R.id.selectAsrAudioButton);
+        builtinTtsButton = findViewById(R.id.builtinTtsButton);
+        builtinAsrButton = findViewById(R.id.builtinAsrButton);
+        importModelButton = findViewById(R.id.importModelButton);
         progress = findViewById(R.id.progress);
         modelName = findViewById(R.id.modelName);
         modelStatus = findViewById(R.id.modelStatus);
         referenceStatus = findViewById(R.id.referenceStatus);
+        asrAudioStatus = findViewById(R.id.asrAudioStatus);
         statusText = findViewById(R.id.statusText);
+        transcriptTitle = findViewById(R.id.transcriptTitle);
+        transcriptText = findViewById(R.id.transcriptText);
         referenceSection = findViewById(R.id.referenceSection);
+        ttsInputSection = findViewById(R.id.ttsInputSection);
+        asrInputSection = findViewById(R.id.asrInputSection);
+        taskSpinner = findViewById(R.id.taskSpinner);
         parameterPanel = new ParameterPanel(this, findViewById(R.id.parametersContainer));
-        modelFile = new File(getFilesDir(), MODEL_ASSET);
+
+        ttsModelFile = new File(getFilesDir(), TTS_MODEL_ASSET);
+        asrModelFile = new File(getFilesDir(), ASR_MODEL_ASSET);
         wavFile = new File(getFilesDir(), "tts-output.wav");
         referenceFile = new File(getFilesDir(), "voice-reference.wav");
+        asrAudioFile = new File(getFilesDir(), "asr-input.wav");
         referenceName = referenceFile.getName();
+        asrAudioName = asrAudioFile.getName();
 
-        synthesizeButton.setOnClickListener(view -> synthesize());
+        synthesizeButton.setOnClickListener(view -> runSelectedTask());
         playButton.setOnClickListener(view -> playAudio());
-        selectReferenceButton.setEnabled(false);
-        selectReferenceButton.setOnClickListener(view -> selectReferenceAudio());
+        builtinTtsButton.setOnClickListener(view -> selectModel(ttsModelFile, TTS_MODEL_ASSET));
+        builtinAsrButton.setOnClickListener(view -> selectModel(asrModelFile, ASR_MODEL_ASSET));
+        importModelButton.setOnClickListener(view -> selectGgufModel());
+        selectReferenceButton.setOnClickListener(view -> selectAudio(REQUEST_REFERENCE_AUDIO));
+        selectAsrAudioButton.setOnClickListener(view -> selectAudio(REQUEST_ASR_AUDIO));
         clearReferenceButton.setOnClickListener(view -> clearReferenceAudio());
         resetOptionsButton.setOnClickListener(view -> {
             parameterPanel.reset();
             statusText.setText(R.string.parameters_reset);
         });
-        updateReferenceStatus();
-        initialize();
+        taskSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                updateTaskUi();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+
+        updateAudioStatuses();
+        File initialModel = ttsModelFile;
+        String initialAsset = TTS_MODEL_ASSET;
+        String savedPath = getPreferences(MODE_PRIVATE).getString(PREF_MODEL_PATH, "");
+        if (asrModelFile.getAbsolutePath().equals(savedPath)) {
+            initialModel = asrModelFile;
+            initialAsset = ASR_MODEL_ASSET;
+        } else if (!ttsModelFile.getAbsolutePath().equals(savedPath)
+                && savedPath != null && !savedPath.isEmpty()) {
+            File custom = new File(savedPath);
+            if (custom.isFile()) {
+                initialModel = custom;
+                initialAsset = null;
+            }
+        }
+        selectModel(initialModel, initialAsset);
     }
 
-    private void initialize() {
+    private void selectModel(File target, String asset) {
+        if (busy) {
+            return;
+        }
+        releasePlayer();
+        modelFile = target;
+        modelReady = false;
+        supportsTts = false;
+        supportsClon = false;
+        speakerReferenceSupported = false;
+        tasks.clear();
+        parameterPanel.setOptions(new JSONArray());
+        transcriptTitle.setVisibility(View.GONE);
+        transcriptText.setVisibility(View.GONE);
+        modelName.setText(target.getName());
+        modelStatus.setText(R.string.detecting_model);
+        statusText.setText(asset == null ? R.string.detecting_model : R.string.extracting_model);
+        setBusy(true);
+
         worker.execute(() -> {
             try {
-                String version = NativeTts.nativeVersion();
-                postToUi(() -> {
-                    modelStatus.setText(getString(R.string.extracting_model));
-                    statusText.setText(getString(R.string.extracting_model));
-                });
-                ensureModelExtracted();
+                nativeVersion = NativeTts.nativeVersion();
+                if (asset != null) {
+                    ensureModelExtracted(target, asset);
+                }
+                if (!target.isFile()) {
+                    throw new IOException("模型文件不存在：" + target.getName());
+                }
                 postToUi(() -> modelStatus.setText(R.string.detecting_model));
-                JSONObject inspection = new JSONObject(NativeTts.inspectModel(modelFile.getAbsolutePath()));
+                JSONObject inspection = new JSONObject(NativeTts.inspectModel(target.getAbsolutePath()));
                 String family = inspection.getString("family");
                 postToUi(() -> {
-                    modelName.setText(family);
-                    parameterPanel.setOptions(inspection.optJSONArray("options"));
+                    if (modelFile == null || !modelFile.equals(target)) {
+                        return;
+                    }
+                    modelName.setText(target.getName() + "\n" + family);
+                    modelFamily = family;
+                    supportsTts = inspection.optBoolean("supportsTts");
+                    supportsClon = inspection.optBoolean("supportsClon");
                     speakerReferenceSupported = inspection.optBoolean("supportsSpeakerReference");
-                    referenceSection.setVisibility(speakerReferenceSupported ? View.VISIBLE : View.GONE);
+                    tasks.clear();
+                    if (supportsTts || supportsClon) {
+                        tasks.add(new TaskEntry("tts", getString(R.string.task_tts)));
+                    }
+                    if (inspection.optBoolean("supportsAsr")) {
+                        tasks.add(new TaskEntry("asr", getString(R.string.task_asr)));
+                    }
+                    ArrayAdapter<TaskEntry> adapter = new ArrayAdapter<>(this,
+                            android.R.layout.simple_spinner_item, tasks);
+                    adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                    taskSpinner.setAdapter(adapter);
+                    parameterPanel.setOptions(inspection.optJSONArray("options"));
                     modelReady = true;
-                    synthesizeButton.setEnabled(true);
-                    resetOptionsButton.setEnabled(true);
-                    selectReferenceButton.setEnabled(speakerReferenceSupported);
-                    updateReferenceStatus();
-                    modelStatus.setText(family + " · audio.cpp " + version + " · ARM64");
+                    setBusy(false);
+                    updateTaskUi();
+                    modelStatus.setText(family + " · audio.cpp " + nativeVersion + " · ARM64");
                     statusText.setText(R.string.model_ready);
+                    SharedPreferences preferences = getPreferences(MODE_PRIVATE);
+                    preferences.edit().putString(PREF_MODEL_PATH, target.getAbsolutePath()).apply();
                 });
             } catch (Throwable error) {
-                Log.e(TAG, "Initialization failed", error);
-                postToUi(() -> showError("初始化失败：" + readableMessage(error)));
+                Log.e(TAG, "Model loading failed", error);
+                postToUi(() -> showError("模型加载失败：" + readableMessage(error)));
             }
         });
     }
 
-    private void selectReferenceAudio() {
+    private void selectGgufModel() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(Intent.createChooser(intent, "选择 GGUF 模型"), REQUEST_GGUF_MODEL);
+    }
+
+    private void selectAudio(int requestCode) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("audio/*");
-        startActivityForResult(Intent.createChooser(intent, "选择 WAV 参考音频"), REQUEST_REFERENCE_AUDIO);
+        String title = requestCode == REQUEST_REFERENCE_AUDIO ? "选择 WAV 参考音频" : "选择要识别的 WAV";
+        startActivityForResult(Intent.createChooser(intent, title), requestCode);
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_REFERENCE_AUDIO && resultCode == RESULT_OK
-                && data != null && data.getData() != null) {
-            copyReferenceAudio(data.getData());
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        if (requestCode == REQUEST_GGUF_MODEL) {
+            importGgufModel(data.getData());
+        } else if (requestCode == REQUEST_REFERENCE_AUDIO || requestCode == REQUEST_ASR_AUDIO) {
+            importAudio(data.getData(), requestCode == REQUEST_REFERENCE_AUDIO);
         }
     }
 
-    private void copyReferenceAudio(Uri source) {
-        referenceName = queryDisplayName(source);
-        selectReferenceButton.setEnabled(false);
-        clearReferenceButton.setEnabled(false);
-        referenceStatus.setText(R.string.reference_copying);
+    private void importGgufModel(Uri source) {
+        String displayName = queryDisplayName(source, "custom.gguf")
+                .replaceAll("[^A-Za-z0-9._-]", "_");
+        if (!displayName.toLowerCase(Locale.ROOT).endsWith(".gguf")) {
+            displayName += ".gguf";
+        }
+        File directory = new File(getFilesDir(), "custom-models");
+        if (!directory.isDirectory() && !directory.mkdirs()) {
+            showError("无法创建自定义模型目录");
+            return;
+        }
+        File destination = new File(directory, System.currentTimeMillis() + "-" + displayName);
+        setBusy(true);
+        modelStatus.setText("正在复制自定义 GGUF…");
+        statusText.setText("正在复制自定义 GGUF，大文件可能需要一些时间…");
         worker.execute(() -> {
-            File temporary = new File(referenceFile.getPath() + ".tmp");
-            try (InputStream input = getContentResolver().openInputStream(source);
-                 FileOutputStream output = new FileOutputStream(temporary)) {
-                if (input == null) {
-                    throw new IOException("无法读取所选音频");
-                }
-                byte[] buffer = new byte[1024 * 1024];
-                int count;
-                while ((count = input.read(buffer)) != -1) {
-                    output.write(buffer, 0, count);
-                }
-                output.getFD().sync();
-                if (temporary.length() < 44) {
-                    throw new IOException("参考音频文件为空或不是有效的 WAV");
-                }
-                if (referenceFile.exists() && !referenceFile.delete()) {
-                    throw new IOException("无法替换旧的参考音频");
-                }
-                if (!temporary.renameTo(referenceFile)) {
-                    throw new IOException("无法保存参考音频");
-                }
+            try {
+                copyUri(source, destination, true);
                 postToUi(() -> {
-                    selectReferenceButton.setEnabled(true);
-                    updateReferenceStatus();
-                    statusText.setText("参考音频已就绪，可填写 reference_text 后开始克隆");
+                    setBusy(false);
+                    selectModel(destination, null);
                 });
             } catch (Exception error) {
-                temporary.delete();
-                Log.e(TAG, "Reference audio import failed", error);
-                postToUi(() -> {
-                    selectReferenceButton.setEnabled(true);
-                    updateReferenceStatus();
-                    showError("参考音频导入失败：" + readableMessage(error));
-                });
+                destination.delete();
+                Log.e(TAG, "GGUF import failed", error);
+                postToUi(() -> showError("自定义模型导入失败：" + readableMessage(error)));
             }
         });
     }
 
-    private String queryDisplayName(Uri source) {
+    private void importAudio(Uri source, boolean reference) {
+        File destination = reference ? referenceFile : asrAudioFile;
+        String displayName = queryDisplayName(source, destination.getName());
+        if (reference) {
+            referenceName = displayName;
+        } else {
+            asrAudioName = displayName;
+        }
+        setBusy(true);
+        statusText.setText("正在复制音频…");
+        worker.execute(() -> {
+            try {
+                copyUri(source, destination, false);
+                postToUi(() -> {
+                    setBusy(false);
+                    updateAudioStatuses();
+                    statusText.setText(reference
+                            ? "参考音频已就绪，可填写 reference_text 后开始克隆"
+                            : "识别音频已就绪，可以开始识别");
+                });
+            } catch (Exception error) {
+                Log.e(TAG, "Audio import failed", error);
+                postToUi(() -> showError("音频导入失败：" + readableMessage(error)));
+            }
+        });
+    }
+
+    private void copyUri(Uri source, File destination, boolean model) throws IOException {
+        File temporary = new File(destination.getPath() + ".tmp");
+        if (temporary.exists() && !temporary.delete()) {
+            throw new IOException("无法清理旧的临时文件");
+        }
+        try (InputStream input = getContentResolver().openInputStream(source);
+             FileOutputStream output = new FileOutputStream(temporary)) {
+            if (input == null) {
+                throw new IOException("无法读取所选文件");
+            }
+            byte[] buffer = new byte[1024 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
+            }
+            output.getFD().sync();
+            validateCopiedFile(temporary, model);
+            if (destination.exists() && !destination.delete()) {
+                throw new IOException("无法替换旧文件");
+            }
+            if (!temporary.renameTo(destination)) {
+                throw new IOException("无法保存导入文件");
+            }
+        } finally {
+            if (temporary.exists()) {
+                temporary.delete();
+            }
+        }
+    }
+
+    private static void validateCopiedFile(File file, boolean model) throws IOException {
+        int minimum = model ? 4 : 44;
+        if (file.length() < minimum) {
+            throw new IOException(model ? "GGUF 文件为空或不完整" : "WAV 文件为空或不完整");
+        }
+        byte[] header = new byte[12];
+        int count;
+        try (FileInputStream input = new FileInputStream(file)) {
+            count = input.read(header);
+        }
+        if (model) {
+            if (count < 4 || header[0] != 'G' || header[1] != 'G'
+                    || header[2] != 'U' || header[3] != 'F') {
+                throw new IOException("所选文件不是有效的 GGUF 模型");
+            }
+        } else if (count < 12 || header[0] != 'R' || header[1] != 'I'
+                || header[2] != 'F' || header[3] != 'F'
+                || header[8] != 'W' || header[9] != 'A'
+                || header[10] != 'V' || header[11] != 'E') {
+            throw new IOException("请选择 RIFF/WAVE 格式的 WAV 音频");
+        }
+    }
+
+    private String queryDisplayName(Uri source, String fallback) {
         try (Cursor cursor = getContentResolver().query(source,
                 new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) {
@@ -196,9 +399,9 @@ public final class MainActivity extends Activity {
                 }
             }
         } catch (Exception error) {
-            Log.w(TAG, "Could not read reference filename", error);
+            Log.w(TAG, "Could not read filename", error);
         }
-        return "reference.wav";
+        return fallback;
     }
 
     private void clearReferenceAudio() {
@@ -207,39 +410,40 @@ public final class MainActivity extends Activity {
             return;
         }
         referenceName = referenceFile.getName();
-        updateReferenceStatus();
+        updateAudioStatuses();
+        updateControls();
         statusText.setText(R.string.reference_empty);
     }
 
-    private void updateReferenceStatus() {
-        boolean selected = referenceFile.isFile();
-        referenceStatus.setText(selected
+    private void updateAudioStatuses() {
+        boolean referenceSelected = referenceFile.isFile();
+        referenceStatus.setText(referenceSelected
                 ? getString(R.string.reference_selected, referenceName)
                 : getString(R.string.reference_empty));
-        clearReferenceButton.setEnabled(selected);
-        clearReferenceButton.setVisibility(selected ? View.VISIBLE : View.GONE);
+        clearReferenceButton.setVisibility(referenceSelected ? View.VISIBLE : View.GONE);
+        asrAudioStatus.setText(asrAudioFile.isFile()
+                ? getString(R.string.asr_audio_selected, asrAudioName)
+                : getString(R.string.asr_audio_empty));
+        updateControls();
     }
 
-    private void ensureModelExtracted() throws IOException {
-        File parent = modelFile.getParentFile();
+    private void ensureModelExtracted(File target, String asset) throws IOException {
+        File parent = target.getParentFile();
         if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
             throw new IOException("无法创建模型目录");
         }
-
         long expectedSize;
-        try (AssetFileDescriptor descriptor = getAssets().openFd(MODEL_ASSET)) {
+        try (AssetFileDescriptor descriptor = getAssets().openFd(asset)) {
             expectedSize = descriptor.getLength();
         }
-        if (modelFile.isFile() && modelFile.length() == expectedSize) {
+        if (target.isFile() && target.length() == expectedSize) {
             return;
         }
-
-        File temporary = new File(modelFile.getPath() + ".tmp");
+        File temporary = new File(target.getPath() + ".tmp");
         if (temporary.exists() && !temporary.delete()) {
             throw new IOException("无法清理旧的模型临时文件");
         }
-
-        try (InputStream input = getAssets().open(MODEL_ASSET);
+        try (InputStream input = getAssets().open(asset);
              FileOutputStream output = new FileOutputStream(temporary)) {
             byte[] buffer = new byte[1024 * 1024];
             int count;
@@ -252,50 +456,104 @@ public final class MainActivity extends Activity {
             temporary.delete();
             throw new IOException("模型解压大小不匹配");
         }
-        if (modelFile.exists() && !modelFile.delete()) {
+        if (target.exists() && !target.delete()) {
             throw new IOException("无法替换旧模型文件");
         }
-        if (!temporary.renameTo(modelFile)) {
+        if (!temporary.renameTo(target)) {
             throw new IOException("无法保存模型文件");
         }
     }
 
-    private void synthesize() {
-        String text = inputText.getText().toString().trim();
-        if (!modelReady) {
+    private String currentTask() {
+        int position = taskSpinner.getSelectedItemPosition();
+        if (position >= 0 && position < tasks.size()) {
+            return tasks.get(position).id;
+        }
+        return "tts";
+    }
+
+    private void updateTaskUi() {
+        boolean tts = "tts".equals(currentTask());
+        ttsInputSection.setVisibility(tts ? View.VISIBLE : View.GONE);
+        asrInputSection.setVisibility(!tts && modelReady ? View.VISIBLE : View.GONE);
+        referenceSection.setVisibility(tts && modelReady && speakerReferenceSupported
+                ? View.VISIBLE : View.GONE);
+        playButton.setVisibility(tts ? View.VISIBLE : View.GONE);
+        transcriptTitle.setVisibility(!tts && transcriptText.length() > 0 ? View.VISIBLE : View.GONE);
+        transcriptText.setVisibility(!tts && transcriptText.length() > 0 ? View.VISIBLE : View.GONE);
+        updateControls();
+    }
+
+    private void setBusy(boolean value) {
+        busy = value;
+        progress.setVisibility(value ? View.VISIBLE : View.GONE);
+        updateControls();
+    }
+
+    private void updateControls() {
+        if (synthesizeButton == null) {
+            return;
+        }
+        boolean tts = "tts".equals(currentTask());
+        synthesizeButton.setText(tts ? R.string.synthesize : R.string.transcribe);
+        synthesizeButton.setEnabled(modelReady && !busy);
+        resetOptionsButton.setEnabled(modelReady && !busy);
+        taskSpinner.setEnabled(modelReady && !busy && tasks.size() > 1);
+        selectReferenceButton.setEnabled(modelReady && !busy && tts && speakerReferenceSupported);
+        clearReferenceButton.setEnabled(modelReady && !busy && tts && referenceFile.isFile());
+        selectAsrAudioButton.setEnabled(modelReady && !busy && !tts);
+        playButton.setEnabled(modelReady && !busy && tts && wavFile.isFile());
+        builtinTtsButton.setEnabled(!busy);
+        builtinAsrButton.setEnabled(!busy);
+        importModelButton.setEnabled(!busy);
+    }
+
+    private void runSelectedTask() {
+        if (!modelReady || busy) {
             showError("模型尚未就绪");
             return;
         }
+        modelStatus.setText(modelFamily + " · audio.cpp " + nativeVersion + " · ARM64");
+        if ("asr".equals(currentTask())) {
+            transcribe();
+        } else {
+            synthesize();
+        }
+    }
+
+    private ParameterPanel.Values collectOptions() {
+        return parameterPanel.collect();
+    }
+
+    private void synthesize() {
+        String text = inputText.getText().toString().trim();
         if (text.isEmpty()) {
             showError("请先输入要合成的文字");
             return;
         }
-
+        if (!supportsTts && supportsClon && !referenceFile.isFile()) {
+            showError("当前模型需要参考音频才能进行语音克隆");
+            return;
+        }
         ParameterPanel.Values options;
         try {
-            options = parameterPanel.collect();
+            options = collectOptions();
         } catch (IllegalArgumentException error) {
             showError(error.getMessage());
             return;
         }
-
+        String selectedModel = modelFile.getAbsolutePath();
         String referencePath = speakerReferenceSupported && referenceFile.isFile()
                 ? referenceFile.getAbsolutePath() : null;
-        synthesizeButton.setEnabled(false);
+        setBusy(true);
         playButton.setEnabled(false);
-        resetOptionsButton.setEnabled(false);
-        selectReferenceButton.setEnabled(false);
-        clearReferenceButton.setEnabled(false);
-        progress.setVisibility(View.VISIBLE);
         statusText.setText(R.string.working);
         long startedAt = System.nanoTime();
-
         worker.execute(() -> {
             String error;
             try {
-                error = NativeTts.synthesize(modelFile.getAbsolutePath(), text,
-                        wavFile.getAbsolutePath(), referencePath, 4,
-                        options.scopes, options.keys, options.values);
+                error = NativeTts.synthesize(selectedModel, text, wavFile.getAbsolutePath(),
+                        referencePath, 4, options.scopes, options.keys, options.values);
             } catch (Throwable failure) {
                 Log.e(TAG, "Synthesis failed", failure);
                 error = readableMessage(failure);
@@ -303,11 +561,7 @@ public final class MainActivity extends Activity {
             double elapsedSeconds = (System.nanoTime() - startedAt) / 1_000_000_000.0;
             String resultError = error;
             postToUi(() -> {
-                progress.setVisibility(View.GONE);
-                synthesizeButton.setEnabled(true);
-                resetOptionsButton.setEnabled(true);
-                selectReferenceButton.setEnabled(speakerReferenceSupported);
-                updateReferenceStatus();
+                setBusy(false);
                 if (resultError == null) {
                     statusText.setText(String.format(Locale.getDefault(),
                             "合成完成，用时 %.1f 秒，正在播放…", elapsedSeconds));
@@ -315,6 +569,59 @@ public final class MainActivity extends Activity {
                     playAudio();
                 } else {
                     showError("合成失败：" + resultError);
+                }
+            });
+        });
+    }
+
+    private void transcribe() {
+        if (!asrAudioFile.isFile()) {
+            showError("请先选择要识别的 WAV 音频");
+            return;
+        }
+        ParameterPanel.Values options;
+        try {
+            options = collectOptions();
+        } catch (IllegalArgumentException error) {
+            showError(error.getMessage());
+            return;
+        }
+        String selectedModel = modelFile.getAbsolutePath();
+        String inputPath = asrAudioFile.getAbsolutePath();
+        setBusy(true);
+        transcriptTitle.setVisibility(View.GONE);
+        transcriptText.setVisibility(View.GONE);
+        statusText.setText(R.string.transcribing);
+        long startedAt = System.nanoTime();
+        worker.execute(() -> {
+            String transcript = null;
+            String language = "";
+            String error = null;
+            try {
+                JSONObject result = new JSONObject(NativeTts.transcribe(selectedModel, inputPath, 4,
+                        options.scopes, options.keys, options.values));
+                transcript = result.optString("text");
+                language = result.optString("language");
+            } catch (Throwable failure) {
+                Log.e(TAG, "Transcription failed", failure);
+                error = readableMessage(failure);
+            }
+            double elapsedSeconds = (System.nanoTime() - startedAt) / 1_000_000_000.0;
+            String resultText = transcript;
+            String resultLanguage = language;
+            String resultError = error;
+            postToUi(() -> {
+                setBusy(false);
+                if (resultError == null) {
+                    transcriptText.setText(resultText);
+                    transcriptTitle.setVisibility(View.VISIBLE);
+                    transcriptText.setVisibility(View.VISIBLE);
+                    String languageSuffix = resultLanguage.isEmpty() ? "" : " · 语言 " + resultLanguage;
+                    statusText.setText(String.format(Locale.getDefault(),
+                            "识别完成，用时 %.1f 秒%s", elapsedSeconds, languageSuffix));
+                    transcriptText.announceForAccessibility(resultText);
+                } else {
+                    showError("识别失败：" + resultError);
                 }
             });
         });
@@ -351,11 +658,9 @@ public final class MainActivity extends Activity {
     }
 
     private void showError(String message) {
+        busy = false;
         progress.setVisibility(View.GONE);
-        synthesizeButton.setEnabled(modelReady);
-        resetOptionsButton.setEnabled(modelReady);
-        selectReferenceButton.setEnabled(modelReady && speakerReferenceSupported);
-        updateReferenceStatus();
+        updateControls();
         modelStatus.setText(message);
         statusText.setText(message);
         statusText.announceForAccessibility(message);

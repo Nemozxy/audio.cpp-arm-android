@@ -2,7 +2,7 @@
 
 **[English](README.md) | [简体中文](README.zh-CN.md)**
 
-This repository is an Android ARM port of [audio.cpp](https://github.com/0xShug0/audio.cpp), a native C++ audio inference framework built on `ggml`. It adds portable ARM native builds, C API packaging, and an offline TTS demo while preserving the upstream model runtime.
+This repository is an Android ARM port of [audio.cpp](https://github.com/0xShug0/audio.cpp), a native C++ audio inference framework built on `ggml`. It adds portable ARM native builds, C API packaging, and an offline TTS / ASR demo with custom GGUF import while preserving the upstream model runtime.
 
 This README intentionally focuses on the Android port. The [upstream README](https://github.com/0xShug0/audio.cpp#readme) remains the reference for the complete model matrix, release news, desktop backends, and ecosystem projects.
 
@@ -36,7 +36,7 @@ Platform-specific changes are kept small and separated from model code so future
 | `armeabi-v7a` | 32-bit core native library cross-compiles; the demo currently packages ARM64 only |
 | Backend | CPU by default; optional Vulkan is not part of the validated demo |
 | Android API | Build helper accepts API 24 and newer |
-| Demo model | MOSS-TTS-Nano 100M Q8_0, offline CPU inference |
+| Demo models | MOSS-TTS-Nano 100M Q8_0 and MOSS-Transcribe-Diarize Q4_K, offline CPU inference |
 
 ### Build the Android native library
 
@@ -78,17 +78,18 @@ dist/
 
 See the [Android build and integration guide](docs/build/android.md) for build options, JNI linking, optional Vulkan, ARM feature targets, and `adb` smoke tests.
 
-### Build the offline TTS demo
+### Build the offline voice demo
 
-The [`android-demo/`](android-demo/) app provides text input, background inference, WAV generation, playback, visible error states, and model-driven parameter controls. Model files and generated APKs are intentionally excluded from Git.
+The [`android-demo/`](android-demo/) app provides TTS and ASR task selection, built-in model switching, custom GGUF import, audio pickers, background inference, WAV generation and playback, selectable transcripts, visible error states, and model-driven parameter controls. Model files and generated APKs are intentionally excluded from Git.
 
-1. Download the model described in the [MOSS-TTS-Nano guide](docs/models/moss_tts_nano.md), then place it at:
+1. Download the models described in the [MOSS-TTS-Nano guide](docs/models/moss_tts_nano.md) and [MOSS-Transcribe-Diarize guide](docs/models/moss_transcribe_diarize.md), then place them at:
 
    ```text
    GGUF/moss-tts-nano-100m-q8_0.gguf
+   GGUF/moss-transcribe-diarize-q4_k.gguf
    ```
 
-2. Build the reduced ARM64 library, JNI binding, and model assets:
+2. Build the reduced ARM64 library, JNI binding, and model assets. The demo compiles `moss_tts_nano,moss_transcribe_diarize` and packages both models without asset compression:
 
    ```bash
    bash android-demo/build_native.sh /path/to/android-ndk
@@ -102,31 +103,41 @@ The [`android-demo/`](android-demo/) app provides text input, background inferen
    gradlew.bat assembleDebug      # Windows
    ```
 
-4. Install the generated APK:
+4. Install the generated APK. The two uncompressed models make this debug APK approximately 956 MB:
 
    ```bash
    adb install -r android-demo/app/build/outputs/apk/debug/app-debug.apk
    ```
 
-#### Model-driven parameter controls
+#### Model-driven tasks and parameter controls
 
-The demo leaves the C API family hint empty so the registry can identify the loaded model from its path. It then uses `audiocpp_model_option_count()` and `audiocpp_model_option()` to enumerate the options owned by that model. Neither the JNI bridge nor the Java UI contains a MOSS-specific parameter list.
+The demo leaves the C API family hint empty so the registry can identify the loaded model. It queries `audiocpp_model_supports()` to show only the offline TTS / cloning and ASR tasks that the model supports. It then uses `audiocpp_model_option_count()` and `audiocpp_model_option()` to enumerate the options owned by that model. Neither the JNI bridge nor the Java UI contains a MOSS-specific parameter list.
 
 | Scope | Demo behavior |
 |---|---|
-| Request | Applies explicitly entered values to the current synthesis request. |
+| Request | Applies explicitly entered values to the current inference request. |
 | Session | Recreates the session when the configured session-option signature changes; the loaded model remains reusable. |
 | Load | Reloads the model and recreates its session when the load-option signature changes. |
 
 Text and numeric values use text fields; boolean values use default / true / false selectors. Blank fields mean “use the model default,” and only explicit values cross JNI. The model still performs final value validation. The reset button clears overrides without changing the loaded model.
 
+#### Custom GGUF import
+
+“Import GGUF” uses the Android system document picker, validates the GGUF magic bytes, and copies the file into app-private storage without broad storage permissions. The imported model follows the same family detection, capability queries, and dynamic parameter UI as a bundled model. The selection is restored on the next launch.
+
+Custom import does not add native code at runtime: the default APK accepts GGUF files from the two compiled families, `moss_tts_nano` and `moss_transcribe_diarize`. To support another family, include it in `AUDIOCPP_MODELS` and supply any optional native/data dependencies. No family-specific Java or parameter-panel branch is needed.
+
 #### Reference-audio voice cloning
 
-When `audiocpp_model_supports_speaker_reference()` reports support, the demo shows an optional reference-audio section. The Android system document picker imports a WAV into app-private storage without requiring broad storage permissions. The JNI bridge decodes it with the same WAV reader used by audio.cpp and passes PCM to `audiocpp_request_set_voice_audio()`.
+When `audiocpp_model_supports_speaker_reference()` reports support, the demo shows an optional reference-audio section. The Android system document picker imports a WAV into app-private storage. The JNI bridge decodes it with the same WAV reader used by audio.cpp and passes PCM to `audiocpp_request_set_voice_audio()`.
 
 With a reference selected, the demo creates a `clon/offline` session when the model supports that task. Removing the reference returns to `tts/offline`; changing tasks recreates the session. Enter the reference recording's transcript in the discovered `reference_text` request parameter when available. MOSS-TTS-Nano also supports cloning without a transcript.
 
-This is a generic parameter interface, not a promise that the demo APK contains every model. The default app bundles MOSS-TTS-Nano and builds only its required native model family. To ship another family, include it in the native build and package its model and dependencies; the discovery and parameter UI need no family-specific branches.
+#### ASR transcription
+
+For a model that reports `asr/offline`, the demo replaces the synthesis controls with a WAV picker and transcript view. JNI decodes the PCM through audio.cpp's WAV reader, passes it to `audiocpp_request_set_audio()`, and reads the final transcript through `audiocpp_result_text()`. MOSS-Transcribe-Diarize can return timestamps and speaker labels in this text.
+
+Only one model and session are retained. Switching bundled or imported models releases the previous session and model before loading the next one, avoiding simultaneous TTS and ASR model residency. The default MOSS ASR path accepts 16 kHz PCM directly; other sample rates require a packaged `libsoxr`, which this demo does not currently bundle.
 
 ### Runtime integration notes
 
@@ -146,12 +157,14 @@ Verified in this port:
 - Chinese TTS generation in approximately 23.1 seconds, producing a non-silent 6-second, 48 kHz, stereo, 16-bit PCM WAV followed by playback.
 - Dynamic request parameters with `max_tokens=30`: the model stopped at 30 generated audio frames and produced a non-silent 2.4-second, 48 kHz, stereo, 16-bit PCM WAV (115,200 frames), followed by playback.
 - Voice cloning through the document picker with a 7.616-second Chinese reference WAV and its transcript. The native request used `clon/offline` and 365,568 reference frames, then produced and played a non-silent 4.48-second, 48 kHz stereo WAV (215,040 output frames). Removing the reference and returning to `tts/offline` also passed.
+- Final-APK ASR with MOSS-Transcribe-Diarize Q4_K and a 7.616-second, 16 kHz mono Chinese WAV. The `asr/offline` request returned the reference sentence with `[0.06][S01]` and `[7.52]` markers after 234.0 seconds in the UI (229.7 seconds in the native session). ASR memory reached approximately 2.9 GB PSS on MuMu.
+- Custom GGUF import through the document picker with a renamed MOSS-TTS-Nano file. The app auto-detected `moss_tts_nano`, restored its dynamic controls, synthesized and played a non-silent 8.8-second stereo WAV (422,400 frames) in 30.7 seconds, and restored the imported model after a cold restart.
 
 Not yet verified:
 
 - Physical ARM Android devices and representative on-device performance.
 - Vulkan inference and every model/backend combination.
-- Optional third-party model dependencies beyond the demo's MOSS-TTS-Nano path.
+- SOXR-based non-16-kHz ASR resampling and other optional third-party dependencies; the default APK does not bundle `libsoxr`.
 - Session-option rebuild and load-option reload paths; the bundled MOSS demo exposes no load-scoped controls.
 
 Emulator success is evidence of the Android/ARM64 loading and inference path, not a guarantee of hardware-independent correctness or performance.

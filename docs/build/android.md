@@ -125,13 +125,15 @@ Inference is blocking and can be memory-intensive. Run it on a native worker thr
 
 The helper packages the core runtime, not every optional model-specific third-party runtime. Models that dynamically load eSpeak-ng, soxr, or another native helper need a compatible Android build of that dependency and its data files; the default build does not bundle them. Likewise, workflows that require ffmpeg or Python cannot assume those programs exist on Android. Check the selected model's own documentation and test its complete inference path on-device.
 
-## Demo model discovery and parameter scopes
+## Demo model discovery, custom GGUF import, and parameter scopes
 
-The demo passes a null family hint to `audiocpp_model_load`, allowing the registry to identify a compatible model from its path. After loading, it enumerates `AUDIOCPP_OPTION_SCOPE_REQUEST`, `AUDIOCPP_OPTION_SCOPE_SESSION`, and `AUDIOCPP_OPTION_SCOPE_LOAD` through `audiocpp_model_option_count()` / `audiocpp_model_option()`. Java builds controls from the returned names, descriptions, defaults, value types, and ranges; it does not keep a per-family option table.
+The demo passes a null family hint to `audiocpp_model_load`, allowing the registry to identify a compatible model. After loading, it uses `audiocpp_model_supports()` to gate offline TTS / cloning and ASR tasks, then enumerates `AUDIOCPP_OPTION_SCOPE_REQUEST`, `AUDIOCPP_OPTION_SCOPE_SESSION`, and `AUDIOCPP_OPTION_SCOPE_LOAD` through `audiocpp_model_option_count()` / `audiocpp_model_option()`. Java builds controls from the returned names, descriptions, defaults, value types, and ranges; it does not keep a per-family option table.
 
 Empty controls preserve model defaults. Explicit request values are applied with `audiocpp_request_set_option()`. A changed session-option signature recreates the session, while a changed load-option signature reloads the model and recreates the session. The native bridge compares sorted key/value signatures so changing request-only fields does not force either rebuild.
 
-Capability discovery does not remove build-time model dependencies. The bundled app intentionally compiles and packages MOSS-TTS-Nano only. Another model family must be present in `AUDIOCPP_MODELS`, and its model package and optional native/data dependencies must be supplied and tested. No additional family-specific JNI or parameter-panel code should be necessary.
+The model picker includes bundled TTS and ASR models plus a custom GGUF action. Custom import uses `ACTION_OPEN_DOCUMENT`, validates the GGUF magic bytes, and copies the file into app-private storage. Imported files use exactly the same capability and option discovery as bundled files. Only one model and session are retained; changing models releases the previous native objects before loading the replacement.
+
+Capability discovery does not remove build-time model dependencies. The bundled app compiles and packages `moss_tts_nano` and `moss_transcribe_diarize`; custom GGUF import is limited to those compiled families in the default APK. Another model family must be present in `AUDIOCPP_MODELS`, and its model package and optional native/data dependencies must be supplied and tested. No additional family-specific JNI or parameter-panel code should be necessary.
 
 On MuMu (Android 12 / API 32 with ARM translation), setting the discovered `max_tokens` request option to `30` stopped generation at 30 audio frames and produced a non-silent 2.4-second, 48 kHz stereo PCM WAV. Session rebuild and load reload were not separately exercised; the bundled model exposes no load-scoped controls.
 
@@ -142,6 +144,16 @@ The reference-audio controls are gated by `audiocpp_model_supports_speaker_refer
 A reference selects `clon/offline` when that task is available; no reference selects `tts/offline`. The task is part of the native session signature, so adding or removing a reference recreates the session. A model's discovered `reference_text` request option carries the transcript when one is available. For MOSS-TTS-Nano the transcript is optional.
 
 The complete picker-to-clone flow was exercised on MuMu with a 7.616-second, 48 kHz stereo Chinese reference and its transcript. The request created `clon/offline`, consumed 365,568 reference frames, and generated a non-silent 4.48-second stereo WAV followed by playback. Removing the reference then created `tts/offline` and passed a separate `max_tokens=30` synthesis regression.
+
+Custom import was exercised on MuMu with a renamed MOSS-TTS-Nano GGUF. The app detected `moss_tts_nano`, restored its generated controls, synthesized and played a non-silent 8.8-second, 48 kHz stereo WAV (422,400 frames) in 30.7 seconds, and restored the imported model after a cold restart.
+
+## Demo ASR transcription
+
+An `asr/offline` capability replaces the synthesis controls with a WAV picker and a selectable transcript. The same WAV reader supplies interleaved float PCM to `audiocpp_request_set_audio()`, and `audiocpp_result_text()` returns the final text. The request/session/load option path is shared with synthesis, so ASR-specific controls such as `max_tokens` and `instruct` are discovered rather than hardcoded.
+
+MOSS-Transcribe-Diarize accepts 16 kHz PCM directly. Its non-16-kHz path requires SOXR; without a packaged `libsoxr`, the demo reports the model's explicit error instead of silently using a lower-quality fallback. Convert input to 16 kHz PCM for this default APK, or package a compatible Android `libsoxr` after validating that dependency separately.
+
+The final APK was tested on MuMu with a 7.616-second, 16 kHz mono Chinese WAV. It returned `[0.06][S01]它的目标是模拟、延伸和扩展人的智能，让机器能够胜任通常需要人类智慧才能完成的任务。[7.52]`. The UI reported 234.0 seconds including session setup, while the native session took 229.7 seconds and generated 39 tokens. A sampled ASR memory reading was approximately 2.9 GB PSS / 3.0 GB RSS. An initial 48 kHz stereo attempt produced the explicit SOXR requirement described above; it was not counted as a successful ASR run.
 
 ## On-device smoke test
 

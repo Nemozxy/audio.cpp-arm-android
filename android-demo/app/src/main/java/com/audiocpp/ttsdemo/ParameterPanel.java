@@ -78,7 +78,7 @@ final class ParameterPanel {
             bindings.clear();
             container.removeAllViews();
             addScope(options, ModelOption.REQUEST,
-                    "请求参数", "每次合成生效；留空使用模型默认值");
+                    "请求参数", "每次推理生效；留空使用模型默认值");
             addScope(options, ModelOption.SESSION,
                     "会话参数", "修改后自动重建会话，模型无需重新下载");
             addScope(options, ModelOption.LOAD,

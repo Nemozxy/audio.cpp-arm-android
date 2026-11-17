@@ -5,7 +5,10 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$APP_DIR/.." && pwd)"
 NDK="${1:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
 ABI="arm64-v8a"
-MODEL="moss-tts-nano-100m-q8_0.gguf"
+MODELS=(
+    "moss-tts-nano-100m-q8_0.gguf"
+    "moss-transcribe-diarize-q4_k.gguf"
+)
 DIST="$ROOT_DIR/build/android-demo/dist"
 JNILIBS="$APP_DIR/app/src/main/jniLibs/$ABI"
 ASSETS="$APP_DIR/app/src/main/assets/models"
@@ -17,13 +20,16 @@ fi
 
 PATH="$ROOT_DIR/build/tools/python/cmake/data/bin:$ROOT_DIR/build/tools/ninja:$PATH" \
     "$ROOT_DIR/scripts/build_android.sh" \
-    --ndk "$NDK" --abi "$ABI" --model-set custom --models moss_tts_nano \
+    --ndk "$NDK" --abi "$ABI" --model-set custom \
+    --models moss_tts_nano,moss_transcribe_diarize \
     --build-root "$ROOT_DIR/build/android-demo" --output "$DIST" -j 8
 
 mkdir -p "$JNILIBS" "$ASSETS"
 cp "$DIST/jniLibs/$ABI/libaudiocpp.so" "$JNILIBS/"
 cp "$DIST/jniLibs/$ABI/libc++_shared.so" "$JNILIBS/"
-cp "$ROOT_DIR/GGUF/$MODEL" "$ASSETS/$MODEL"
+for MODEL in "${MODELS[@]}"; do
+    cp "$ROOT_DIR/GGUF/$MODEL" "$ASSETS/$MODEL"
+done
 
 HOST_TAG="linux-x86_64"
 EXE=""

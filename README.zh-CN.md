@@ -2,7 +2,7 @@
 
 **[English](README.md) | [简体中文](README.zh-CN.md)**
 
-本仓库是 [audio.cpp](https://github.com/0xShug0/audio.cpp) 的 Android ARM 移植分支。原项目是基于 `ggml` 的原生 C++ 音频推理框架；本分支在保留上游模型运行时的基础上，增加便携 ARM 原生构建、C API 打包和离线 TTS Demo。
+本仓库是 [audio.cpp](https://github.com/0xShug0/audio.cpp) 的 Android ARM 移植分支。原项目是基于 `ggml` 的原生 C++ 音频推理框架；本分支在保留上游模型运行时的基础上，增加便携 ARM 原生构建、C API 打包，以及支持自定义 GGUF 导入的离线 TTS / ASR Demo。
 
 这份 README 重点说明 Android 移植。完整模型清单、版本新闻、桌面后端和生态项目仍以[上游 README](https://github.com/0xShug0/audio.cpp#readme) 为准。
 
@@ -36,7 +36,7 @@
 | `armeabi-v7a` | 32 位核心原生库交叉编译成功；Demo 当前只打包 ARM64 |
 | 后端 | 默认 CPU；可选 Vulkan 不在当前 Demo 验证范围内 |
 | Android API | 构建脚本接受 API 24 及以上 |
-| Demo 模型 | MOSS-TTS-Nano 100M Q8_0，CPU 离线推理 |
+| Demo 模型 | MOSS-TTS-Nano 100M Q8_0 与 MOSS-Transcribe-Diarize Q4_K，CPU 离线推理 |
 
 ### 构建 Android 原生库
 
@@ -78,17 +78,18 @@ dist/
 
 完整构建选项、JNI 链接、可选 Vulkan、ARM 特性目标和 `adb` 冒烟测试见 [Android 构建与集成指南](docs/build/android.md)。
 
-### 构建离线 TTS Demo
+### 构建离线语音 Demo
 
-[`android-demo/`](android-demo/) 应用支持文本输入、后台推理、WAV 生成、播放、错误状态显示，以及由模型元数据驱动的参数控件。模型文件与生成的 APK 不纳入 Git。
+[`android-demo/`](android-demo/) 应用支持 TTS / ASR 任务选择、内置模型切换、自定义 GGUF 导入、音频选择器、后台推理、WAV 生成与播放、可选择的识别文本、错误状态显示，以及由模型元数据驱动的参数控件。模型文件与生成的 APK 不纳入 Git。
 
-1. 按 [MOSS-TTS-Nano 模型指南](docs/models/moss_tts_nano.md)下载模型，放到仓库根目录：
+1. 按 [MOSS-TTS-Nano 模型指南](docs/models/moss_tts_nano.md)和 [MOSS-Transcribe-Diarize 模型指南](docs/models/moss_transcribe_diarize.md)下载模型，放到仓库根目录：
 
    ```text
    GGUF/moss-tts-nano-100m-q8_0.gguf
+   GGUF/moss-transcribe-diarize-q4_k.gguf
    ```
 
-2. 构建裁剪后的 ARM64 原生库、JNI 绑定和模型资产：
+2. 构建裁剪后的 ARM64 原生库、JNI 绑定和模型资产。Demo 编译 `moss_tts_nano,moss_transcribe_diarize`，并不压缩地打包两个模型：
 
    ```bash
    bash android-demo/build_native.sh /path/to/android-ndk
@@ -102,31 +103,41 @@ dist/
    gradlew.bat assembleDebug      # Windows
    ```
 
-4. 安装生成的 APK：
+4. 安装生成的 APK。两个未压缩模型使此调试 APK 约为 956 MB：
 
    ```bash
    adb install -r android-demo/app/build/outputs/apk/debug/app-debug.apk
    ```
 
-#### 模型驱动的参数控件
+#### 模型驱动的任务与参数控件
 
-Demo 将 C API 的家族提示留空，由注册表根据模型路径自动识别家族，再通过 `audiocpp_model_option_count()` 和 `audiocpp_model_option()` 枚举该模型实际拥有的参数。JNI 桥接层和 Java 界面均没有 MOSS 专用参数清单。
+Demo 将 C API 的家族提示留空，由注册表自动识别模型，再通过 `audiocpp_model_supports()` 只显示模型实际支持的离线 TTS / 克隆和 ASR 任务。随后通过 `audiocpp_model_option_count()` 和 `audiocpp_model_option()` 枚举该模型实际拥有的参数。JNI 桥接层和 Java 界面均没有 MOSS 专用参数清单。
 
 | 作用域 | Demo 行为 |
 |---|---|
-| 请求参数 | 将显式填写的值应用到当前合成请求。 |
+| 请求参数 | 将显式填写的值应用到当前推理请求。 |
 | 会话参数 | 会话参数签名变化时重建会话；已加载的模型仍可复用。 |
 | 加载参数 | 加载参数签名变化时重新加载模型并重建会话。 |
 
 文本和数值使用输入框，布尔值使用“默认 / true / false”选择器。空白字段表示使用模型默认值，只有显式填写的值才会传入 JNI，最终参数校验仍由模型完成。“恢复模型默认参数”只清空覆盖值，不会更换已加载模型。
 
+#### 自定义 GGUF 导入
+
+“导入 GGUF”通过 Android 系统文件选择器选择文件，校验 GGUF 魔数后复制到应用私有目录，不需要额外存储权限。导入模型与内置模型使用相同的家族识别、能力查询和动态参数界面，下次启动时会恢复上次选择。
+
+自定义导入不会在运行时增加原生代码：默认 APK 只接受已编译的 `moss_tts_nano` 和 `moss_transcribe_diarize` 两个家族的 GGUF。支持其他家族时，仍需将其加入 `AUDIOCPP_MODELS` 并提供可选原生或数据依赖，但 Java 和参数面板不需要按家族增加分支。
+
 #### 参考音频语音克隆
 
-当 `audiocpp_model_supports_speaker_reference()` 报告支持时，Demo 会显示可选的参考音频区域。通过 Android 系统文件选择器将 WAV 导入应用私有目录，不需要额外的存储权限。JNI 桥接层复用 audio.cpp 的 WAV 解码器，并通过 `audiocpp_request_set_voice_audio()` 传入 PCM。
+当 `audiocpp_model_supports_speaker_reference()` 报告支持时，Demo 会显示可选的参考音频区域。通过 Android 系统文件选择器将 WAV 导入应用私有目录，JNI 桥接层复用 audio.cpp 的 WAV 解码器，并通过 `audiocpp_request_set_voice_audio()` 传入 PCM。
 
 选择参考音频后，如果模型支持 `clon` 任务，Demo 会创建 `clon/offline` 会话；移除参考音频则恢复 `tts/offline`，任务切换会重建会话。有参考音频文字稿时，在自动发现的 `reference_text` 请求参数中填写。MOSS-TTS-Nano 也支持没有文字稿的语音克隆。
 
-通用参数界面并不代表 Demo APK 内置了所有模型。默认应用只打包 MOSS-TTS-Nano，并仅编译其所需的原生模型家族。发布其他模型时，仍需将对应家族加入原生构建并打包模型及依赖，但模型发现和参数界面不需要按家族增加分支。
+#### ASR 语音识别
+
+对于声明支持 `asr/offline` 的模型，Demo 会将合成控件替换为 WAV 选择器和识别文本区域。JNI 使用 audio.cpp 的 WAV 解码器读取 PCM，通过 `audiocpp_request_set_audio()` 传入音频，并通过 `audiocpp_result_text()` 读取最终文本。MOSS-Transcribe-Diarize 的文本可以包含时间戳和说话人标签。
+
+原生层只保留一个模型和会话。切换内置或导入模型时，会先释放上一会话和模型，再加载下一个，避免 TTS 与 ASR 模型同时驻留内存。默认 MOSS ASR 路径可直接处理 16 kHz PCM；其他采样率需要打包 `libsoxr`，当前 Demo 尚未包含该依赖。
 
 ### 运行时接入注意事项
 
@@ -146,12 +157,14 @@ Demo 将 C API 的家族提示留空，由注册表根据模型路径自动识�
 - 中文文本合成耗时约 23.1 秒，生成非静音的 6 秒、48 kHz、双声道、16-bit PCM WAV，并完成播放。
 - 动态请求参数 `max_tokens=30`：模型生成 30 个音频帧后停止，输出非静音的 2.4 秒、48 kHz、双声道、16-bit PCM WAV（115,200 帧），并完成播放。
 - 通过系统文件选择器导入 7.616 秒的中文参考 WAV 及其文字稿进行语音克隆。原生请求使用 `clon/offline` 和 365,568 帧参考音频，生成并播放了非静音的 4.48 秒、48 kHz 双声道 WAV（215,040 输出帧）。移除参考音频并恢复 `tts/offline` 的回归测试也已通过。
+- 最终 APK 使用 MOSS-Transcribe-Diarize Q4_K 识别 7.616 秒、16 kHz 单声道中文 WAV。`asr/offline` 请求返回了与参考句一致的正文，并带 `[0.06][S01]` 和 `[7.52]` 标记；界面总耗时 234.0 秒，原生会话耗时 229.7 秒。MuMu 上 ASR 内存约为 2.9 GB PSS。
+- 通过系统文件选择器导入重命名的 MOSS-TTS-Nano 自定义 GGUF，自动识别为 `moss_tts_nano` 并恢复动态参数控件；30.7 秒生成并播放了非静音的 8.8 秒双声道 WAV（422,400 帧），冷启动后也能恢复该导入模型。
 
 尚未验证：
 
 - 物理 ARM Android 设备，以及具有代表性的真机性能。
 - Vulkan 推理和全部模型与后端组合。
-- Demo 的 MOSS-TTS-Nano 路径之外的可选第三方模型依赖。
+- 基于 SOXR 的非 16 kHz ASR 重采样及其他可选第三方依赖；默认 APK 未打包 `libsoxr`。
 - 会话参数触发的重建与加载参数触发的重新加载；当前内置 MOSS Demo 没有开放加载作用域控件。
 
 模拟器成功可以证明 Android/ARM64 的加载和推理路径已打通，但不能证明所有真机上的正确性与性能。

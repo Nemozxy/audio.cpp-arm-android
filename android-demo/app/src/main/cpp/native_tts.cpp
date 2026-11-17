@@ -149,14 +149,12 @@ void ensure_model(const char * model_path, const std::vector<OptionInput> & inpu
     g_load_signature = signature;
 }
 
-void ensure_session(const char * model_path, int threads,
-                    const std::vector<OptionInput> & inputs, bool cloning) {
+void ensure_session(const char * model_path, const char * task, int threads,
+                    const std::vector<OptionInput> & inputs) {
     ensure_model(model_path, inputs);
-    if (cloning && audiocpp_model_supports_speaker_reference(g_model) != 1) {
-        throw std::runtime_error("当前模型不支持参考音频语音克隆");
+    if (audiocpp_model_supports(g_model, task, "offline") != 1) {
+        throw std::runtime_error(std::string("当前模型不支持离线任务：") + task);
     }
-    const char * task = cloning && audiocpp_model_supports(g_model, "clon", "offline") == 1
-        ? "clon" : "tts";
     const std::string signature = std::string(task) + ";" +
         option_signature(inputs, AUDIOCPP_OPTION_SCOPE_SESSION, threads);
     if (g_session != nullptr && g_session_signature == signature) {
@@ -364,8 +362,11 @@ void append_json_name(std::string & json, const char * name) {
 }
 
 std::string model_inspection_json() {
-    if (audiocpp_model_supports(g_model, "tts", "offline") != 1) {
-        throw std::runtime_error("当前模型不支持离线 TTS，无法用于此 Demo");
+    const bool supports_tts = audiocpp_model_supports(g_model, "tts", "offline") == 1;
+    const bool supports_clon = audiocpp_model_supports(g_model, "clon", "offline") == 1;
+    const bool supports_asr = audiocpp_model_supports(g_model, "asr", "offline") == 1;
+    if (!supports_tts && !supports_clon && !supports_asr) {
+        throw std::runtime_error("当前模型不支持此 Demo 的离线 TTS、语音克隆或 ASR 任务");
     }
 
     std::string json = "{";
@@ -373,6 +374,12 @@ std::string model_inspection_json() {
     json += json_string(audiocpp_model_family(g_model));
     append_json_name(json, "description");
     json += json_string(audiocpp_model_description(g_model));
+    append_json_name(json, "supportsTts");
+    json += supports_tts ? "true" : "false";
+    append_json_name(json, "supportsClon");
+    json += supports_clon ? "true" : "false";
+    append_json_name(json, "supportsAsr");
+    json += supports_asr ? "true" : "false";
     append_json_name(json, "supportsSpeakerReference");
     json += audiocpp_model_supports_speaker_reference(g_model) == 1 ? "true" : "false";
     append_json_name(json, "supportsStyleCondition");
@@ -493,7 +500,13 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
         const auto inputs = read_options(env, scopes, keys, values);
         const bool has_reference = reference_audio.value != nullptr && *reference_audio.value != '\0';
         std::lock_guard<std::mutex> lock(g_mutex);
-        ensure_session(model.value, threads, inputs, has_reference);
+        ensure_model(model.value, inputs);
+        if (has_reference && audiocpp_model_supports_speaker_reference(g_model) != 1) {
+            throw std::runtime_error("当前模型不支持参考音频语音克隆");
+        }
+        const char * task = has_reference ? "clon" :
+            (audiocpp_model_supports(g_model, "tts", "offline") == 1 ? "tts" : "clon");
+        ensure_session(model.value, task, threads, inputs);
 
         RequestGuard request;
         if (request.value == nullptr) {
@@ -541,4 +554,66 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
     } catch (...) {
         return java_string(env, "原生合成发生未知错误");
     }
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
+    JNIEnv * env, jclass, jstring model_path, jstring input_audio_path, jint threads,
+    jintArray scopes, jobjectArray keys, jobjectArray values) {
+    UtfChars model(env, model_path);
+    UtfChars input_audio(env, input_audio_path);
+    if (model.value == nullptr || input_audio.value == nullptr) {
+        throw_java(env, "JNI 参数为空或内存不足");
+        return nullptr;
+    }
+
+    try {
+        const auto inputs = read_options(env, scopes, keys, values);
+        const auto wav = engine::audio::read_wav_f32(std::filesystem::path(input_audio.value));
+        if (wav.samples.empty() || wav.channels <= 0 || wav.sample_rate <= 0) {
+            throw std::runtime_error("输入音频没有有效的 PCM 内容");
+        }
+        const size_t frames = wav.samples.size() / static_cast<size_t>(wav.channels);
+
+        std::lock_guard<std::mutex> lock(g_mutex);
+        ensure_session(model.value, "asr", threads, inputs);
+        RequestGuard request;
+        if (request.value == nullptr) {
+            throw std::runtime_error("创建识别请求失败");
+        }
+        check(audiocpp_request_set_audio(request.value, wav.samples.data(), frames,
+                                         wav.sample_rate, wav.channels),
+              "设置识别音频");
+        __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+                            "ASR input: %zu frames, %d Hz, %d channels",
+                            frames, wav.sample_rate, wav.channels);
+        for (const auto & input : inputs) {
+            if (input.scope == AUDIOCPP_OPTION_SCOPE_REQUEST) {
+                check(audiocpp_request_set_option(request.value, input.key.c_str(), input.value.c_str()),
+                      "设置请求参数");
+            }
+        }
+
+        ResultGuard result;
+        check(audiocpp_session_run(g_session, request.value, &result.value), "执行语音识别推理");
+        const char * text = nullptr;
+        const char * language = nullptr;
+        check(audiocpp_result_text(result.value, &text, &language), "读取识别文本");
+        std::string json = "{";
+        append_json_name(json, "text");
+        json += json_string(text == nullptr ? "" : text);
+        append_json_name(json, "language");
+        json += json_string(language == nullptr ? "" : language);
+        json += '}';
+        __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+                            "ASR result: %zu UTF-8 bytes", text == nullptr ? 0u : std::char_traits<char>::length(text));
+        return java_string(env, json);
+    } catch (const std::exception & error) {
+        __android_log_print(ANDROID_LOG_ERROR, "AudioCppNative", "%s", error.what());
+        throw_java(env, error.what());
+    } catch (...) {
+        throw_java(env, "原生识别发生未知错误");
+    }
+    return nullptr;
 }
