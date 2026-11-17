@@ -6,6 +6,13 @@
     <string name="model_name">正在识别模型…</string>
     <string name="input_label">要合成的文字</string>
     <string name="default_text">你好，这是 audio.cpp 在安卓模拟器上的离线语音合成测试。</string>
+    <string name="reference_title">语音克隆（可选）</string>
+    <string name="reference_help">选择 WAV 参考音频以模仿其音色。音频文字稿可在下方 reference_text 参数中填写。</string>
+    <string name="select_reference">选择参考音频</string>
+    <string name="clear_reference">移除参考音频</string>
+    <string name="reference_empty">未选择参考音频，将使用普通 TTS</string>
+    <string name="reference_selected">已选择：%1$s\n下次合成将使用语音克隆</string>
+    <string name="reference_copying">正在复制参考音频…</string>
     <string name="parameters_title">模型参数</string>
     <string name="reset_parameters">恢复模型默认参数</string>
     <string name="parameters_reset">已恢复默认参数，下次合成时生效</string>

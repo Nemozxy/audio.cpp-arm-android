@@ -16,6 +16,7 @@ final class NativeTts {
     static native String inspectModel(String modelPath);
 
     /** Returns null on success, otherwise a human-readable error. */
-    static native String synthesize(String modelPath, String text, String outputPath, int threads,
+    static native String synthesize(String modelPath, String text, String outputPath,
+                                    String referenceAudioPath, int threads,
                                     int[] scopes, String[] keys, String[] values);
 }

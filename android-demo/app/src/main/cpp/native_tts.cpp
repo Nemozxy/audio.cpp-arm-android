@@ -2,12 +2,14 @@
 #include <android/log.h>
 
 #include "audiocpp.h"
+#include "engine/framework/audio/wav_reader.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <mutex>
@@ -147,9 +149,16 @@ void ensure_model(const char * model_path, const std::vector<OptionInput> & inpu
     g_load_signature = signature;
 }
 
-void ensure_session(const char * model_path, int threads, const std::vector<OptionInput> & inputs) {
+void ensure_session(const char * model_path, int threads,
+                    const std::vector<OptionInput> & inputs, bool cloning) {
     ensure_model(model_path, inputs);
-    const std::string signature = option_signature(inputs, AUDIOCPP_OPTION_SCOPE_SESSION, threads);
+    if (cloning && audiocpp_model_supports_speaker_reference(g_model) != 1) {
+        throw std::runtime_error("当前模型不支持参考音频语音克隆");
+    }
+    const char * task = cloning && audiocpp_model_supports(g_model, "clon", "offline") == 1
+        ? "clon" : "tts";
+    const std::string signature = std::string(task) + ";" +
+        option_signature(inputs, AUDIOCPP_OPTION_SCOPE_SESSION, threads);
     if (g_session != nullptr && g_session_signature == signature) {
         return;
     }
@@ -158,9 +167,11 @@ void ensure_session(const char * model_path, int threads, const std::vector<Opti
     OptionsGuard session_options;
     apply_options(session_options.value, inputs, AUDIOCPP_OPTION_SCOPE_SESSION);
     audiocpp_backend_config backend = {"cpu", 0, std::max(1, threads)};
-    check(audiocpp_session_create(g_model, "tts", "offline", &backend,
+    check(audiocpp_session_create(g_model, task, "offline", &backend,
                                   session_options.value, &g_session),
-          "创建 CPU TTS 会话");
+          "创建 CPU 语音会话");
+    __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+                        "Session created: %s/offline", task);
     g_session_signature = signature;
 }
 
@@ -467,19 +478,22 @@ Java_com_audiocpp_ttsdemo_NativeTts_inspectModel(JNIEnv * env, jclass, jstring m
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
-    JNIEnv * env, jclass, jstring model_path, jstring text, jstring output_path, jint threads,
+    JNIEnv * env, jclass, jstring model_path, jstring text, jstring output_path,
+    jstring reference_audio_path, jint threads,
     jintArray scopes, jobjectArray keys, jobjectArray values) {
     UtfChars model(env, model_path);
     UtfChars transcript(env, text);
     UtfChars output(env, output_path);
+    UtfChars reference_audio(env, reference_audio_path);
     if (model.value == nullptr || transcript.value == nullptr || output.value == nullptr) {
         return java_string(env, "JNI 参数为空或内存不足");
     }
 
     try {
         const auto inputs = read_options(env, scopes, keys, values);
+        const bool has_reference = reference_audio.value != nullptr && *reference_audio.value != '\0';
         std::lock_guard<std::mutex> lock(g_mutex);
-        ensure_session(model.value, threads, inputs);
+        ensure_session(model.value, threads, inputs, has_reference);
 
         RequestGuard request;
         if (request.value == nullptr) {
@@ -487,6 +501,19 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
         }
         check(audiocpp_request_set_text(request.value, transcript.value, nullptr),
               "设置合成文字");
+        if (has_reference) {
+            const auto wav = engine::audio::read_wav_f32(std::filesystem::path(reference_audio.value));
+            if (wav.samples.empty() || wav.channels <= 0 || wav.sample_rate <= 0) {
+                throw std::runtime_error("参考音频没有有效的 PCM 内容");
+            }
+            const size_t reference_frames = wav.samples.size() / static_cast<size_t>(wav.channels);
+            check(audiocpp_request_set_voice_audio(request.value, wav.samples.data(),
+                                                   reference_frames, wav.sample_rate, wav.channels),
+                  "设置语音克隆参考音频");
+            __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+                                "Voice reference: %zu frames, %d Hz, %d channels",
+                                reference_frames, wav.sample_rate, wav.channels);
+        }
         for (const auto & input : inputs) {
             if (input.scope == AUDIOCPP_OPTION_SCOPE_REQUEST) {
                 check(audiocpp_request_set_option(request.value, input.key.c_str(), input.value.c_str()),
@@ -495,7 +522,7 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
         }
 
         ResultGuard result;
-        check(audiocpp_session_run(g_session, request.value, &result.value), "执行 TTS 推理");
+        check(audiocpp_session_run(g_session, request.value, &result.value), "执行语音合成推理");
 
         const float * samples = nullptr;
         size_t frames = 0;

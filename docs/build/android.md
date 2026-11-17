@@ -135,6 +135,14 @@ Capability discovery does not remove build-time model dependencies. The bundled 
 
 On MuMu (Android 12 / API 32 with ARM translation), setting the discovered `max_tokens` request option to `30` stopped generation at 30 audio frames and produced a non-silent 2.4-second, 48 kHz stereo PCM WAV. Session rebuild and load reload were not separately exercised; the bundled model exposes no load-scoped controls.
 
+## Demo reference-audio voice cloning
+
+The reference-audio controls are gated by `audiocpp_model_supports_speaker_reference()` rather than a family-name check. `ACTION_OPEN_DOCUMENT` imports the selected WAV into app-private storage, so no broad storage permission is needed. The JNI target compiles `src/framework/audio/wav_reader.cpp` alongside its bridge and passes the decoded interleaved float PCM to `audiocpp_request_set_voice_audio()`.
+
+A reference selects `clon/offline` when that task is available; no reference selects `tts/offline`. The task is part of the native session signature, so adding or removing a reference recreates the session. A model's discovered `reference_text` request option carries the transcript when one is available. For MOSS-TTS-Nano the transcript is optional.
+
+The complete picker-to-clone flow was exercised on MuMu with a 7.616-second, 48 kHz stereo Chinese reference and its transcript. The request created `clon/offline`, consumed 365,568 reference frames, and generated a non-silent 4.48-second stereo WAV followed by playback. Removing the reference then created `tts/offline` and passed a separate `max_tokens=30` synthesis regression.
+
 ## On-device smoke test
 
 Connect exactly one ARM Android device with USB debugging enabled, then select the matching ABI below. The test checks ABI compatibility, registry creation, and built-in task/model registration; it does not run model inference.

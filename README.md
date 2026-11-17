@@ -120,6 +120,12 @@ The demo leaves the C API family hint empty so the registry can identify the loa
 
 Text and numeric values use text fields; boolean values use default / true / false selectors. Blank fields mean “use the model default,” and only explicit values cross JNI. The model still performs final value validation. The reset button clears overrides without changing the loaded model.
 
+#### Reference-audio voice cloning
+
+When `audiocpp_model_supports_speaker_reference()` reports support, the demo shows an optional reference-audio section. The Android system document picker imports a WAV into app-private storage without requiring broad storage permissions. The JNI bridge decodes it with the same WAV reader used by audio.cpp and passes PCM to `audiocpp_request_set_voice_audio()`.
+
+With a reference selected, the demo creates a `clon/offline` session when the model supports that task. Removing the reference returns to `tts/offline`; changing tasks recreates the session. Enter the reference recording's transcript in the discovered `reference_text` request parameter when available. MOSS-TTS-Nano also supports cloning without a transcript.
+
 This is a generic parameter interface, not a promise that the demo APK contains every model. The default app bundles MOSS-TTS-Nano and builds only its required native model family. To ship another family, include it in the native build and package its model and dependencies; the discovery and parameter UI need no family-specific branches.
 
 ### Runtime integration notes
@@ -139,6 +145,7 @@ Verified in this port:
 - ARM64 demo installation on MuMu Emulator using x86_64 with ARM translation, Android 12 / API 32.
 - Chinese TTS generation in approximately 23.1 seconds, producing a non-silent 6-second, 48 kHz, stereo, 16-bit PCM WAV followed by playback.
 - Dynamic request parameters with `max_tokens=30`: the model stopped at 30 generated audio frames and produced a non-silent 2.4-second, 48 kHz, stereo, 16-bit PCM WAV (115,200 frames), followed by playback.
+- Voice cloning through the document picker with a 7.616-second Chinese reference WAV and its transcript. The native request used `clon/offline` and 365,568 reference frames, then produced and played a non-silent 4.48-second, 48 kHz stereo WAV (215,040 output frames). Removing the reference and returning to `tts/offline` also passed.
 
 Not yet verified:
 

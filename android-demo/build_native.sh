@@ -36,6 +36,7 @@ LLVM_BIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
     -std=c++17 -O2 -fPIC -shared -Wl,--no-undefined \
     -Wl,-z,max-page-size=16384 -Wl,-soname,libaudiocpp_jni.so \
     -I"$ROOT_DIR/include" "$APP_DIR/app/src/main/cpp/native_tts.cpp" \
+    "$ROOT_DIR/src/framework/audio/wav_reader.cpp" \
     -L"$JNILIBS" -laudiocpp -llog -landroid \
     -o "$JNILIBS/libaudiocpp_jni.so"
 "$LLVM_BIN/llvm-strip$EXE" --strip-unneeded "$JNILIBS/libaudiocpp_jni.so"
