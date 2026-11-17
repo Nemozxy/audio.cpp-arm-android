@@ -9,8 +9,11 @@ import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -29,9 +32,12 @@ public final class MainActivity extends Activity {
     private EditText inputText;
     private Button synthesizeButton;
     private Button playButton;
+    private Button resetOptionsButton;
     private ProgressBar progress;
+    private TextView modelName;
     private TextView modelStatus;
     private TextView statusText;
+    private ParameterPanel parameterPanel;
     private File modelFile;
     private File wavFile;
     private MediaPlayer player;
@@ -45,14 +51,21 @@ public final class MainActivity extends Activity {
         inputText = findViewById(R.id.inputText);
         synthesizeButton = findViewById(R.id.synthesizeButton);
         playButton = findViewById(R.id.playButton);
+        resetOptionsButton = findViewById(R.id.resetOptionsButton);
         progress = findViewById(R.id.progress);
+        modelName = findViewById(R.id.modelName);
         modelStatus = findViewById(R.id.modelStatus);
         statusText = findViewById(R.id.statusText);
+        parameterPanel = new ParameterPanel(this, findViewById(R.id.parametersContainer));
         modelFile = new File(getFilesDir(), MODEL_ASSET);
         wavFile = new File(getFilesDir(), "tts-output.wav");
 
         synthesizeButton.setOnClickListener(view -> synthesize());
         playButton.setOnClickListener(view -> playAudio());
+        resetOptionsButton.setOnClickListener(view -> {
+            parameterPanel.reset();
+            statusText.setText(R.string.parameters_reset);
+        });
         initialize();
     }
 
@@ -62,13 +75,19 @@ public final class MainActivity extends Activity {
                 String version = NativeTts.nativeVersion();
                 postToUi(() -> {
                     modelStatus.setText(getString(R.string.extracting_model));
-                    statusText.setText(getString(R.string.extracting_model));
+                    statusText.setText(R.string.extracting_model);
                 });
                 ensureModelExtracted();
+                postToUi(() -> modelStatus.setText(R.string.detecting_model));
+                JSONObject inspection = new JSONObject(NativeTts.inspectModel(modelFile.getAbsolutePath()));
+                String family = inspection.getString("family");
                 postToUi(() -> {
+                    modelName.setText(family);
+                    parameterPanel.setOptions(inspection.optJSONArray("options"));
                     modelReady = true;
                     synthesizeButton.setEnabled(true);
-                    modelStatus.setText("模型已就绪 · audio.cpp " + version + " · ARM64");
+                    resetOptionsButton.setEnabled(true);
+                    modelStatus.setText(family + " · audio.cpp " + version + " · ARM64");
                     statusText.setText(R.string.model_ready);
                 });
             } catch (Throwable error) {
@@ -111,7 +130,7 @@ public final class MainActivity extends Activity {
             throw new IOException("模型解压大小不匹配");
         }
         if (modelFile.exists() && !modelFile.delete()) {
-            throw new IOException("无法替换旧模型");
+            throw new IOException("无法替换旧模型文件");
         }
         if (!temporary.renameTo(modelFile)) {
             throw new IOException("无法保存模型文件");
@@ -129,8 +148,17 @@ public final class MainActivity extends Activity {
             return;
         }
 
+        ParameterPanel.Values options;
+        try {
+            options = parameterPanel.collect();
+        } catch (IllegalArgumentException error) {
+            showError(error.getMessage());
+            return;
+        }
+
         synthesizeButton.setEnabled(false);
         playButton.setEnabled(false);
+        resetOptionsButton.setEnabled(false);
         progress.setVisibility(View.VISIBLE);
         statusText.setText(R.string.working);
         long startedAt = System.nanoTime();
@@ -139,7 +167,8 @@ public final class MainActivity extends Activity {
             String error;
             try {
                 error = NativeTts.synthesize(modelFile.getAbsolutePath(), text,
-                        wavFile.getAbsolutePath(), 4);
+                        wavFile.getAbsolutePath(), 4,
+                        options.scopes, options.keys, options.values);
             } catch (Throwable failure) {
                 Log.e(TAG, "Synthesis failed", failure);
                 error = readableMessage(failure);
@@ -149,6 +178,7 @@ public final class MainActivity extends Activity {
             postToUi(() -> {
                 progress.setVisibility(View.GONE);
                 synthesizeButton.setEnabled(true);
+                resetOptionsButton.setEnabled(true);
                 if (resultError == null) {
                     statusText.setText(String.format(Locale.getDefault(),
                             "合成完成，用时 %.1f 秒，正在播放…", elapsedSeconds));
@@ -176,7 +206,7 @@ public final class MainActivity extends Activity {
             player.setDataSource(wavFile.getAbsolutePath());
             player.setOnCompletionListener(mediaPlayer -> {
                 playButton.setText(R.string.play);
-                statusText.setText("播放完成，可修改文字后再次合成");
+                statusText.setText("播放完成，可修改文字或参数后再次合成");
             });
             player.setOnErrorListener((mediaPlayer, what, extra) -> {
                 showError("播放失败：MediaPlayer " + what + "/" + extra);
@@ -194,6 +224,7 @@ public final class MainActivity extends Activity {
     private void showError(String message) {
         progress.setVisibility(View.GONE);
         synthesizeButton.setEnabled(modelReady);
+        resetOptionsButton.setEnabled(modelReady);
         modelStatus.setText(message);
         statusText.setText(message);
         statusText.announceForAccessibility(message);

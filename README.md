@@ -80,7 +80,7 @@ See the [Android build and integration guide](docs/build/android.md) for build o
 
 ### Build the offline TTS demo
 
-The [`android-demo/`](android-demo/) app provides text input, background inference, WAV generation, playback, and visible error states. Model files and generated APKs are intentionally excluded from Git.
+The [`android-demo/`](android-demo/) app provides text input, background inference, WAV generation, playback, visible error states, and model-driven parameter controls. Model files and generated APKs are intentionally excluded from Git.
 
 1. Download the model described in the [MOSS-TTS-Nano guide](docs/models/moss_tts_nano.md), then place it at:
 
@@ -108,6 +108,20 @@ The [`android-demo/`](android-demo/) app provides text input, background inferen
    adb install -r android-demo/app/build/outputs/apk/debug/app-debug.apk
    ```
 
+#### Model-driven parameter controls
+
+The demo leaves the C API family hint empty so the registry can identify the loaded model from its path. It then uses `audiocpp_model_option_count()` and `audiocpp_model_option()` to enumerate the options owned by that model. Neither the JNI bridge nor the Java UI contains a MOSS-specific parameter list.
+
+| Scope | Demo behavior |
+|---|---|
+| Request | Applies explicitly entered values to the current synthesis request. |
+| Session | Recreates the session when the configured session-option signature changes; the loaded model remains reusable. |
+| Load | Reloads the model and recreates its session when the load-option signature changes. |
+
+Text and numeric values use text fields; boolean values use default / true / false selectors. Blank fields mean “use the model default,” and only explicit values cross JNI. The model still performs final value validation. The reset button clears overrides without changing the loaded model.
+
+This is a generic parameter interface, not a promise that the demo APK contains every model. The default app bundles MOSS-TTS-Nano and builds only its required native model family. To ship another family, include it in the native build and package its model and dependencies; the discovery and parameter UI need no family-specific branches.
+
 ### Runtime integration notes
 
 - Copy the complete model package from Android assets to an app-private directory such as `context.filesDir`; pass its absolute filesystem path to `audiocpp_model_load`.
@@ -124,12 +138,14 @@ Verified in this port:
 - 77 exported `audiocpp_*` symbols on both ARM ABIs, `0x4000` LOAD alignment, and no `libomp` dependency.
 - ARM64 demo installation on MuMu Emulator using x86_64 with ARM translation, Android 12 / API 32.
 - Chinese TTS generation in approximately 23.1 seconds, producing a non-silent 6-second, 48 kHz, stereo, 16-bit PCM WAV followed by playback.
+- Dynamic request parameters with `max_tokens=30`: the model stopped at 30 generated audio frames and produced a non-silent 2.4-second, 48 kHz, stereo, 16-bit PCM WAV (115,200 frames), followed by playback.
 
 Not yet verified:
 
 - Physical ARM Android devices and representative on-device performance.
 - Vulkan inference and every model/backend combination.
 - Optional third-party model dependencies beyond the demo's MOSS-TTS-Nano path.
+- Session-option rebuild and load-option reload paths; the bundled MOSS demo exposes no load-scoped controls.
 
 Emulator success is evidence of the Android/ARM64 loading and inference path, not a guarantee of hardware-independent correctness or performance.
 
@@ -137,7 +153,7 @@ Emulator success is evidence of the Android/ARM64 loading and inference path, no
 
 Copy the required ABI directories into `app/src/main/jniLibs`, include `include/audiocpp.h` from a JNI target, and load `audiocpp` before calling the binding. The application owns the registry, model, session, request, and result handles described in the [C API guide](docs/c_api.md).
 
-Bindings do not need to hardcode every model's controls. After loading a model, `audiocpp_model_option_count()` and `audiocpp_model_option()` expose load, session, and request options with names, descriptions, defaults, and range metadata. A UI can generate controls from that metadata while the model remains responsible for final validation. The current demo intentionally uses a fixed MOSS-TTS-Nano configuration to keep the first end-to-end test small.
+Bindings do not need to hardcode every model's controls. After loading a model, `audiocpp_model_option_count()` and `audiocpp_model_option()` expose load, session, and request options with names, descriptions, defaults, and range metadata. A UI can generate controls from that metadata while the model remains responsible for final validation. The demo implements this pattern, including default-preserving empty fields and automatic session/model rebuilding when their respective options change.
 
 ## Upstream audio.cpp in Brief
 

@@ -80,7 +80,7 @@ dist/
 
 ### 构建离线 TTS Demo
 
-[`android-demo/`](android-demo/) 应用支持文本输入、后台推理、WAV 生成、播放和错误状态显示。模型文件与生成的 APK 不纳入 Git。
+[`android-demo/`](android-demo/) 应用支持文本输入、后台推理、WAV 生成、播放、错误状态显示，以及由模型元数据驱动的参数控件。模型文件与生成的 APK 不纳入 Git。
 
 1. 按 [MOSS-TTS-Nano 模型指南](docs/models/moss_tts_nano.md)下载模型，放到仓库根目录：
 
@@ -108,6 +108,20 @@ dist/
    adb install -r android-demo/app/build/outputs/apk/debug/app-debug.apk
    ```
 
+#### 模型驱动的参数控件
+
+Demo 将 C API 的家族提示留空，由注册表根据模型路径自动识别家族，再通过 `audiocpp_model_option_count()` 和 `audiocpp_model_option()` 枚举该模型实际拥有的参数。JNI 桥接层和 Java 界面均没有 MOSS 专用参数清单。
+
+| 作用域 | Demo 行为 |
+|---|---|
+| 请求参数 | 将显式填写的值应用到当前合成请求。 |
+| 会话参数 | 会话参数签名变化时重建会话；已加载的模型仍可复用。 |
+| 加载参数 | 加载参数签名变化时重新加载模型并重建会话。 |
+
+文本和数值使用输入框，布尔值使用“默认 / true / false”选择器。空白字段表示使用模型默认值，只有显式填写的值才会传入 JNI，最终参数校验仍由模型完成。“恢复模型默认参数”只清空覆盖值，不会更换已加载模型。
+
+通用参数界面并不代表 Demo APK 内置了所有模型。默认应用只打包 MOSS-TTS-Nano，并仅编译其所需的原生模型家族。发布其他模型时，仍需将对应家族加入原生构建并打包模型及依赖，但模型发现和参数界面不需要按家族增加分支。
+
 ### 运行时接入注意事项
 
 - 将完整模型包从 assets 解压到 `context.filesDir` 等应用私有目录，再把绝对文件路径传给 `audiocpp_model_load`。
@@ -124,12 +138,14 @@ dist/
 - 两种 ARM ABI 均导出 77 个 `audiocpp_*` 符号，LOAD 段按 `0x4000` 对齐，且不依赖 `libomp`。
 - ARM64 Demo 已安装到 MuMu 模拟器（x86_64，启用 ARM 翻译，Android 12 / API 32）。
 - 中文文本合成耗时约 23.1 秒，生成非静音的 6 秒、48 kHz、双声道、16-bit PCM WAV，并完成播放。
+- 动态请求参数 `max_tokens=30`：模型生成 30 个音频帧后停止，输出非静音的 2.4 秒、48 kHz、双声道、16-bit PCM WAV（115,200 帧），并完成播放。
 
 尚未验证：
 
 - 物理 ARM Android 设备，以及具有代表性的真机性能。
 - Vulkan 推理和全部模型与后端组合。
 - Demo 的 MOSS-TTS-Nano 路径之外的可选第三方模型依赖。
+- 会话参数触发的重建与加载参数触发的重新加载；当前内置 MOSS Demo 没有开放加载作用域控件。
 
 模拟器成功可以证明 Android/ARM64 的加载和推理路径已打通，但不能证明所有真机上的正确性与性能。
 
@@ -137,7 +153,7 @@ dist/
 
 将所需 ABI 目录复制到 `app/src/main/jniLibs`，在 JNI 目标中引入 `include/audiocpp.h`，并在调用绑定前加载 `audiocpp`。应用按照 [C API 指南](docs/c_api.md) 管理 registry、model、session、request 和 result 句柄。
 
-绑定层不需要硬编码每个模型的参数。模型加载后，可以通过 `audiocpp_model_option_count()` 和 `audiocpp_model_option()` 获取加载、会话和请求作用域中的选项，包括名称、说明、默认值和范围元数据。界面可以据此动态生成控件，最终校验仍由模型负责。当前 Demo 为保持首个端到端验证足够小，仍使用固定的 MOSS-TTS-Nano 配置。
+绑定层不需要硬编码每个模型的参数。模型加载后，可以通过 `audiocpp_model_option_count()` 和 `audiocpp_model_option()` 获取加载、会话和请求作用域中的选项，包括名称、说明、默认值和范围元数据。界面可以据此动态生成控件，最终校验仍由模型负责。Demo 已实现这一模式，包括用空白字段保留默认值，以及在会话或加载参数变化时自动重建相应对象。
 
 ## 上游 audio.cpp 简介
 

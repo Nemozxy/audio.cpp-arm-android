@@ -12,6 +12,10 @@ final class NativeTts {
 
     static native String nativeVersion();
 
+    /** Returns model capabilities and declared options as JSON. */
+    static native String inspectModel(String modelPath);
+
     /** Returns null on success, otherwise a human-readable error. */
-    static native String synthesize(String modelPath, String text, String outputPath, int threads);
+    static native String synthesize(String modelPath, String text, String outputPath, int threads,
+                                    int[] scopes, String[] keys, String[] values);
 }
