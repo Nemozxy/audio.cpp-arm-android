@@ -157,6 +157,15 @@
                 android:textSize="16sp" />
         </LinearLayout>
 
+        <CheckBox
+            android:id="@+id/profilingEnabled"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/profiling_enabled"
+            android:textColor="@color/secondary"
+            android:textSize="14sp" />
+
         <LinearLayout
             android:id="@+id/ttsInputSection"
             android:layout_width="match_parent"

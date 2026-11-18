@@ -12,6 +12,7 @@ API="24"
 BUILD_TYPE="Release"
 BACKEND="cpu"
 ARM_ARCH=""
+KLEIDIAI="OFF"
 MODEL_SET="full"
 MODELS=""
 DEPLOYMENT_BUILD="ON"
@@ -38,6 +39,7 @@ Options:
   --backend cpu|vulkan     Compute backend. Default: cpu
   --arm-arch <arch>        Optional GGML ARM -march value, for example
                            armv8.2-a+dotprod. Default: portable ABI baseline
+  --kleidiai ON|OFF        Compile KleidiAI kernels. Default: OFF
   --model-set full|core|custom
                            Model composite. Default: full
   --models <list>          Models for --model-set custom (comma/semicolon list)
@@ -74,6 +76,7 @@ while [[ $# -gt 0 ]]; do
         --api) require_value "$@"; API="$2"; shift 2 ;;
         --backend) require_value "$@"; BACKEND="$2"; shift 2 ;;
         --arm-arch) require_value "$@"; ARM_ARCH="$2"; shift 2 ;;
+        --kleidiai) require_value "$@"; KLEIDIAI="$2"; shift 2 ;;
         --model-set) require_value "$@"; MODEL_SET="$2"; shift 2 ;;
         --models) require_value "$@"; MODELS="$2"; shift 2 ;;
         --build-type) require_value "$@"; BUILD_TYPE="$2"; shift 2 ;;
@@ -106,6 +109,10 @@ case "$BACKEND" in
     cpu) VULKAN="OFF" ;;
     vulkan) VULKAN="ON" ;;
     *) echo "--backend must be cpu or vulkan." >&2; exit 1 ;;
+esac
+case "$KLEIDIAI" in
+    ON|OFF) ;;
+    *) echo "--kleidiai must be ON or OFF." >&2; exit 1 ;;
 esac
 case "$MODEL_SET" in
     full|core|custom) ;;
@@ -212,6 +219,8 @@ build_abi() {
         -DENGINE_ENABLE_NATIVE_CPU=OFF
         -DENGINE_ENABLE_OPENMP=OFF
         -DGGML_OPENMP=OFF
+        -DGGML_CPU_REPACK=ON
+        -DGGML_CPU_KLEIDIAI="$KLEIDIAI"
         -DENGINE_ENABLE_NEON="$neon"
         -DENGINE_BUILD_TESTS=OFF
         -DENGINE_BUILD_EXTENDED_TESTS=OFF

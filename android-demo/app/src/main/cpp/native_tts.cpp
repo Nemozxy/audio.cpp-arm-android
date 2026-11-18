@@ -3,10 +3,13 @@
 
 #include "audiocpp.h"
 #include "engine/framework/audio/wav_reader.h"
+#include "ggml-cpu.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -17,6 +20,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -91,6 +95,8 @@ std::string g_diagnostic_log;
 bool g_diagnostic_truncated = false;
 constexpr size_t kDiagnosticLogLimit = 4 * 1024 * 1024;
 
+void log_callback(audiocpp_log_level level, const char * text, void *);
+
 void append_diagnostic_log(const char * text) {
     if (text == nullptr) {
         return;
@@ -136,8 +142,76 @@ void begin_diagnostic_log(const char * task, int threads) {
         g_diagnostic_log.clear();
         g_diagnostic_truncated = false;
     }
-    native_log(ANDROID_LOG_INFO, "AudioCppNative", "Run started: task=%s threads=%d", task, threads);
+    // Install the sink before diagnostics so cold runs also retain HWCAP data.
+    audiocpp_log_set(log_callback, nullptr);
+    audiocpp_cpu_profile_reset();
+    native_log(ANDROID_LOG_INFO, "AudioCppNative", "Run started: task=%s threads=%d profiling=%d",
+               task, threads, audiocpp_cpu_profile_is_enabled());
+    audiocpp_cpu_log_diagnostics();
 }
+
+class ProfileRunGuard {
+public:
+    ProfileRunGuard() : started_(std::chrono::steady_clock::now()) {
+        if (audiocpp_cpu_profile_is_enabled() == 0) {
+            return;
+        }
+        sampler_ = std::thread([this]() { sample_loop(); });
+    }
+
+    ~ProfileRunGuard() {
+        if (sampler_.joinable()) {
+            {
+                std::lock_guard<std::mutex> lock(sample_mutex_);
+                stop_ = true;
+            }
+            sample_cv_.notify_all();
+            sampler_.join();
+        }
+        audiocpp_cpu_profile_log_summary();
+    }
+
+    ProfileRunGuard(const ProfileRunGuard &) = delete;
+    ProfileRunGuard & operator=(const ProfileRunGuard &) = delete;
+
+private:
+    void sample_loop() {
+        std::unique_lock<std::mutex> lock(sample_mutex_);
+        while (!stop_) {
+            lock.unlock();
+            sample_cpu_frequencies();
+            lock.lock();
+            sample_cv_.wait_for(lock, std::chrono::seconds(1), [this]() { return stop_; });
+        }
+    }
+
+    void sample_cpu_frequencies() {
+        std::string values;
+        for (int cpu = 0; cpu < 64; ++cpu) {
+            const std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                "/cpufreq/scaling_cur_freq";
+            std::ifstream input(path);
+            int64_t frequency = 0;
+            if (!(input >> frequency)) {
+                continue;
+            }
+            if (!values.empty()) {
+                values += ' ';
+            }
+            values += "cpu" + std::to_string(cpu) + "=" + std::to_string(frequency);
+        }
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started_).count();
+        native_log(ANDROID_LOG_INFO, "AudioCppNative", "cpu.freq.sample elapsed_ms=%.3f unit=kHz %s",
+                   elapsed, values.empty() ? "unavailable" : values.c_str());
+    }
+
+    std::chrono::steady_clock::time_point started_;
+    std::thread sampler_;
+    std::mutex sample_mutex_;
+    std::condition_variable sample_cv_;
+    bool stop_ = false;
+};
 
 void log_callback(audiocpp_log_level level, const char * text, void *) {
     int priority = ANDROID_LOG_DEBUG;
@@ -561,6 +635,11 @@ Java_com_audiocpp_ttsdemo_NativeTts_nativeVersion(JNIEnv * env, jclass) {
     return env->NewStringUTF(audiocpp_build_version());
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_audiocpp_ttsdemo_NativeTts_setProfiling(JNIEnv *, jclass, jboolean enabled) {
+    audiocpp_cpu_profile_set_enabled(enabled == JNI_TRUE ? 1 : 0);
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_audiocpp_ttsdemo_NativeTts_performanceReport(JNIEnv * env, jclass) {
     std::lock_guard<std::mutex> lock(g_diagnostic_mutex);
@@ -603,6 +682,7 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
     try {
         const auto total_started = std::chrono::steady_clock::now();
         begin_diagnostic_log("tts", threads);
+        ProfileRunGuard profile_run;
         const auto inputs = read_options(env, scopes, keys, values);
         const bool has_reference = reference_audio.value != nullptr && *reference_audio.value != '\0';
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -696,6 +776,7 @@ Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
                 std::chrono::steady_clock::now() - started).count();
         };
         auto stage_started = total_started;
+        ProfileRunGuard profile_run;
         const auto inputs = read_options(env, scopes, keys, values);
         const auto wav = engine::audio::read_wav_f32(std::filesystem::path(input_audio.value));
         if (wav.samples.empty() || wav.channels <= 0 || wav.sample_rate <= 0) {

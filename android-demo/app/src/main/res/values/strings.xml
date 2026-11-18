@@ -13,6 +13,7 @@
     <string name="threads_label">推理线程</string>
     <string name="threads_hint">1～32</string>
     <string name="threads_default">4</string>
+    <string name="profiling_enabled">详细性能分析（单独运行；逐算子计时与 CPU 采样会增加耗时）</string>
     <string name="input_label">要合成的文字</string>
     <string name="default_text">你好，这是 audio.cpp 在安卓模拟器上的离线语音合成测试。</string>
     <string name="reference_title">语音克隆（可选）</string>

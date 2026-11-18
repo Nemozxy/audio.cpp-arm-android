@@ -16,6 +16,7 @@ import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -62,11 +63,30 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static final class RunMetadata {
+        final String task;
+        final String modelFamily;
+        final String modelName;
+        final String threads;
+        final boolean profiling;
+        String status = "";
+        String transcript = "";
+
+        RunMetadata(String task, String modelFamily, String modelName, String threads, boolean profiling) {
+            this.task = task;
+            this.modelFamily = modelFamily;
+            this.modelName = modelName;
+            this.threads = threads;
+            this.profiling = profiling;
+        }
+    }
+
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final List<TaskEntry> tasks = new ArrayList<>();
 
     private EditText inputText;
     private EditText threadsInput;
+    private CheckBox profilingEnabled;
     private Button synthesizeButton;
     private Button playButton;
     private Button resetOptionsButton;
@@ -101,6 +121,7 @@ public final class MainActivity extends Activity {
     private String nativeVersion = "";
     private String modelFamily = "";
     private String pendingPerformanceReport;
+    private RunMetadata lastRun;
     private MediaPlayer player;
     private boolean modelReady;
     private boolean busy;
@@ -116,6 +137,7 @@ public final class MainActivity extends Activity {
 
         inputText = findViewById(R.id.inputText);
         threadsInput = findViewById(R.id.threadsInput);
+        profilingEnabled = findViewById(R.id.profilingEnabled);
         synthesizeButton = findViewById(R.id.synthesizeButton);
         playButton = findViewById(R.id.playButton);
         resetOptionsButton = findViewById(R.id.resetOptionsButton);
@@ -149,6 +171,7 @@ public final class MainActivity extends Activity {
         asrAudioName = asrAudioFile.getName();
 
         synthesizeButton.setOnClickListener(view -> runSelectedTask());
+        profilingEnabled.setOnCheckedChangeListener((view, enabled) -> NativeTts.setProfiling(enabled));
         playButton.setOnClickListener(view -> playAudio());
         exportPerformanceButton.setOnClickListener(view -> exportPerformanceReport());
         builtinTtsButton.setOnClickListener(view -> selectModel(ttsModelFile, TTS_MODEL_ASSET));
@@ -196,6 +219,8 @@ public final class MainActivity extends Activity {
         }
         releasePlayer();
         modelFile = target;
+        lastRun = null;
+        hasPerformanceReport = false;
         modelReady = false;
         supportsTts = false;
         supportsClon = false;
@@ -300,17 +325,16 @@ public final class MainActivity extends Activity {
     }
 
     private void exportPerformanceReport() {
-        if (busy || !hasPerformanceReport) {
+        RunMetadata run = lastRun;
+        if (busy || !hasPerformanceReport || run == null) {
             return;
         }
-        pendingPerformanceReport = PerformanceReport.build(this, nativeVersion, modelFamily,
-                modelFile == null ? "" : modelFile.getName(), currentTask(),
-                threadsInput.getText().toString(), statusText.getText().toString(),
-                transcriptText.getText().toString());
+        pendingPerformanceReport = PerformanceReport.build(this, nativeVersion, run.modelFamily,
+                run.modelName, run.task, run.threads, run.profiling, run.status, run.transcript);
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/plain");
-        intent.putExtra(Intent.EXTRA_TITLE, PerformanceReport.fileName(currentTask()));
+        intent.putExtra(Intent.EXTRA_TITLE, PerformanceReport.fileName(run.task));
         try {
             startActivityForResult(intent, REQUEST_EXPORT_PERFORMANCE);
         } catch (Exception error) {
@@ -542,6 +566,7 @@ public final class MainActivity extends Activity {
         synthesizeButton.setEnabled(modelReady && !busy);
         resetOptionsButton.setEnabled(modelReady && !busy);
         threadsInput.setEnabled(modelReady && !busy);
+        profilingEnabled.setEnabled(!busy);
         taskSpinner.setEnabled(modelReady && !busy && tasks.size() > 1);
         selectReferenceButton.setEnabled(modelReady && !busy && tts && speakerReferenceSupported);
         clearReferenceButton.setEnabled(modelReady && !busy && tts && referenceFile.isFile());
@@ -604,6 +629,9 @@ public final class MainActivity extends Activity {
         String selectedModel = modelFile.getAbsolutePath();
         String referencePath = speakerReferenceSupported && referenceFile.isFile()
                 ? referenceFile.getAbsolutePath() : null;
+        RunMetadata run = new RunMetadata("tts", modelFamily, new File(selectedModel).getName(),
+                Integer.toString(threads), profilingEnabled.isChecked());
+        lastRun = run;
         hasPerformanceReport = true;
         setBusy(true);
         playButton.setEnabled(false);
@@ -623,12 +651,14 @@ public final class MainActivity extends Activity {
             postToUi(() -> {
                 setBusy(false);
                 if (resultError == null) {
-                    statusText.setText(String.format(Locale.getDefault(),
-                            "合成完成，用时 %.1f 秒，正在播放…", elapsedSeconds));
+                    run.status = String.format(Locale.getDefault(),
+                            "合成完成，本次任务用时 %.1f 秒（不含模型加载），正在播放…", elapsedSeconds);
+                    statusText.setText(run.status);
                     playButton.setEnabled(true);
                     playAudio();
                 } else {
-                    showError("合成失败：" + resultError);
+                    run.status = "合成失败：" + resultError;
+                    showError(run.status);
                 }
             });
         });
@@ -650,6 +680,9 @@ public final class MainActivity extends Activity {
         }
         String selectedModel = modelFile.getAbsolutePath();
         String inputPath = asrAudioFile.getAbsolutePath();
+        RunMetadata run = new RunMetadata("asr", modelFamily, new File(selectedModel).getName(),
+                Integer.toString(threads), profilingEnabled.isChecked());
+        lastRun = run;
         hasPerformanceReport = true;
         setBusy(true);
         transcriptTitle.setVisibility(View.GONE);
@@ -676,15 +709,18 @@ public final class MainActivity extends Activity {
             postToUi(() -> {
                 setBusy(false);
                 if (resultError == null) {
+                    run.transcript = resultText;
                     transcriptText.setText(resultText);
                     transcriptTitle.setVisibility(View.VISIBLE);
                     transcriptText.setVisibility(View.VISIBLE);
                     String languageSuffix = resultLanguage.isEmpty() ? "" : " · 语言 " + resultLanguage;
-                    statusText.setText(String.format(Locale.getDefault(),
-                            "识别完成，用时 %.1f 秒%s", elapsedSeconds, languageSuffix));
+                    run.status = String.format(Locale.getDefault(),
+                            "识别完成，本次任务用时 %.1f 秒（不含模型加载）%s", elapsedSeconds, languageSuffix);
+                    statusText.setText(run.status);
                     transcriptText.announceForAccessibility(resultText);
                 } else {
-                    showError("识别失败：" + resultError);
+                    run.status = "识别失败：" + resultError;
+                    showError(run.status);
                 }
             });
         });

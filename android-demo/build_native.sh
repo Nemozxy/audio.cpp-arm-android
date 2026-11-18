@@ -5,6 +5,7 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$APP_DIR/.." && pwd)"
 NDK="${1:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
 ARM_ARCH="${2:-}"
+KLEIDIAI="${3:-OFF}"
 ABI="arm64-v8a"
 BUILD_ROOT="${ANDROID_DEMO_BUILD_ROOT:-$ROOT_DIR/build/android-demo}"
 MODELS=(
@@ -16,14 +17,14 @@ JNILIBS="$APP_DIR/app/src/main/jniLibs/$ABI"
 ASSETS="$APP_DIR/app/src/main/assets/models"
 
 if [[ -z "$NDK" || ! -f "$NDK/build/cmake/android.toolchain.cmake" ]]; then
-    echo "Usage: $0 /path/to/android-ndk [GGML_ARM_ARCH]" >&2
+    echo "Usage: $0 /path/to/android-ndk [GGML_ARM_ARCH] [KLEIDIAI_ON_OFF]" >&2
     exit 1
 fi
 
 BUILD_ARGS=(
     --ndk "$NDK" --abi "$ABI" --model-set custom
     --models moss_tts_nano,moss_transcribe_diarize
-    --build-root "$BUILD_ROOT" --output "$DIST" -j 8
+    --build-root "$BUILD_ROOT" --output "$DIST" --kleidiai "$KLEIDIAI" -j 8
 )
 if [[ -n "$ARM_ARCH" ]]; then
     BUILD_ARGS+=(--arm-arch "$ARM_ARCH")
@@ -49,7 +50,8 @@ LLVM_BIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
     --sysroot="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/sysroot" \
     -std=c++17 -O2 -fPIC -shared -Wl,--no-undefined \
     -Wl,-z,max-page-size=16384 -Wl,-soname,libaudiocpp_jni.so \
-    -I"$ROOT_DIR/include" "$APP_DIR/app/src/main/cpp/native_tts.cpp" \
+    -I"$ROOT_DIR/include" -I"$ROOT_DIR/external/ggml/include" \
+    "$APP_DIR/app/src/main/cpp/native_tts.cpp" \
     "$ROOT_DIR/src/framework/audio/wav_reader.cpp" \
     -L"$JNILIBS" -laudiocpp -llog -landroid \
     -o "$JNILIBS/libaudiocpp_jni.so"

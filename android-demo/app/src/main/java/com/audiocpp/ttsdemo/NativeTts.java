@@ -12,6 +12,9 @@ final class NativeTts {
 
     static native String nativeVersion();
 
+    /** Enables a separate instrumented run; timing benchmarks should leave this off. */
+    static native void setProfiling(boolean enabled);
+
     /** Returns native diagnostics for the most recent inference attempt. */
     static native String performanceReport();
 
