@@ -124,6 +124,14 @@ extern "C" {
 
     GGML_BACKEND_API void ggml_cpu_init(void);
 
+    // Optional, low-overhead ARM/CPU audit diagnostics. Profiling is disabled
+    // by default and can also be enabled with GGML_CPU_PROFILE=1.
+    GGML_BACKEND_API void ggml_cpu_log_diagnostics(void);
+    GGML_BACKEND_API void ggml_cpu_profile_set_enabled(int enabled);
+    GGML_BACKEND_API int  ggml_cpu_profile_is_enabled(void);
+    GGML_BACKEND_API void ggml_cpu_profile_reset(void);
+    GGML_BACKEND_API void ggml_cpu_profile_log_summary(void);
+
     //
     // CPU backend
     //

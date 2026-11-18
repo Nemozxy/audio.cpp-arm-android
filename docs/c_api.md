@@ -313,6 +313,22 @@ audiocpp_log_set(my_log_callback, NULL);
 audiocpp_log_set(NULL, NULL);
 ```
 
+### CPU audit diagnostics
+
+ABI 0.5 adds `audiocpp_cpu_log_diagnostics()` and the
+`audiocpp_cpu_profile_*()` functions for low-level CPU performance audits. They
+report hardware capabilities, compile-time ARM features, operator wall time,
+and actual generic / Repack / KleidiAI dispatch counts. Profiling is disabled by
+default; enable it with `audiocpp_cpu_profile_set_enabled(1)` only for a separate
+diagnostic run because it adds per-operator overhead. Reset counters before a
+run and emit them with `audiocpp_cpu_profile_log_summary()` afterwards. Output
+uses the callback registered by `audiocpp_log_set()`.
+
+These controls require a statically linked CPU backend. Under
+`GGML_BACKEND_DL`, diagnostics report that the mode is unavailable and
+profiling remains disabled; do not treat that as a hardware feature result.
+`GGML_CPU_PROFILE=1` can also enable profiling before the first graph executes.
+
 ## Notes
 
 - The library does **not** call `omp_set_num_threads()`. `audiocpp_cli` does,

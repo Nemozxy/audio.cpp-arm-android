@@ -15,6 +15,7 @@
 #include "audiocpp.h"
 
 #include <ggml.h>
+#include <ggml-cpu.h>
 
 #include "engine/framework/runtime/task_vocabulary.h"
 
@@ -409,6 +410,43 @@ void audiocpp_log_set(audiocpp_log_callback log_callback, void * user_data) {
         ggml_log_set(nullptr, nullptr);
         engine::debug::set_log_callback(nullptr, nullptr);
     }
+}
+
+void audiocpp_cpu_log_diagnostics(void) {
+#ifdef GGML_BACKEND_DL
+    ggml_log_adapter(GGML_LOG_LEVEL_WARN,
+                     "CPU audit diagnostics require a statically linked CPU backend\n", nullptr);
+#else
+    ggml_cpu_log_diagnostics();
+#endif
+}
+
+void audiocpp_cpu_profile_set_enabled(int enabled) {
+#ifndef GGML_BACKEND_DL
+    ggml_cpu_profile_set_enabled(enabled);
+#else
+    (void) enabled;
+#endif
+}
+
+int audiocpp_cpu_profile_is_enabled(void) {
+#ifdef GGML_BACKEND_DL
+    return 0;
+#else
+    return ggml_cpu_profile_is_enabled();
+#endif
+}
+
+void audiocpp_cpu_profile_reset(void) {
+#ifndef GGML_BACKEND_DL
+    ggml_cpu_profile_reset();
+#endif
+}
+
+void audiocpp_cpu_profile_log_summary(void) {
+#ifndef GGML_BACKEND_DL
+    ggml_cpu_profile_log_summary();
+#endif
 }
 
 /* ------------------------------------------------------------------ */

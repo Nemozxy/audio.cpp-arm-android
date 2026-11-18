@@ -11,6 +11,14 @@ int main(void) {
         return 1;
     }
 
+    audiocpp_cpu_log_diagnostics();
+    audiocpp_cpu_profile_set_enabled(0);
+    audiocpp_cpu_profile_reset();
+    if (audiocpp_cpu_profile_is_enabled() != 0) {
+        fprintf(stderr, "CPU profiling did not remain disabled\n");
+        return 4;
+    }
+
     audiocpp_registry * registry = NULL;
     const audiocpp_status status = audiocpp_registry_create(NULL, &registry);
     if (status != AUDIOCPP_OK || registry == NULL) {

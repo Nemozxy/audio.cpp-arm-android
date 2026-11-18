@@ -37,6 +37,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/quants.h
         ggml-cpu/traits.cpp
         ggml-cpu/traits.h
+        ggml-cpu/profiling.cpp
+        ggml-cpu/profiling.h
         ggml-cpu/amx/amx.cpp
         ggml-cpu/amx/amx.h
         ggml-cpu/amx/mmq.cpp
@@ -719,6 +721,11 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
     target_sources(${GGML_CPU_NAME} PRIVATE ${GGML_CPU_SOURCES})
     target_compile_options(${GGML_CPU_NAME} PRIVATE ${ARCH_FLAGS})
     target_compile_definitions(${GGML_CPU_NAME} PRIVATE ${ARCH_DEFINITIONS})
+    if (GGML_CPU_ARM_ARCH)
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_CPU_ARM_ARCH_STRING="${GGML_CPU_ARM_ARCH}")
+    else()
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_CPU_ARM_ARCH_STRING="portable")
+    endif()
 
     if (EMSCRIPTEN)
         set_target_properties(${GGML_CPU_NAME} PROPERTIES COMPILE_FLAGS "-msimd128")

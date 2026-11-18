@@ -14,6 +14,7 @@
 #include "ops.h"
 #include "ggml.h"
 #include "common.h"
+#include "profiling.h"
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
@@ -3222,6 +3223,13 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.use_ref    =*/ cplan->use_ref,
     };
 
+    if (state->ith == 0) {
+        ggml_cpu_profile_graph_begin();
+    }
+    ggml_cpu_profile_thread(state->ith);
+    struct ggml_tensor * profile_last_node = NULL;
+    int profile_last_fused = 0;
+
 #ifdef GGML_USE_OPENMP
     GGML_PRINT_DEBUG("thread #%d compute-start cplan %p\n", state->ith, (const void *)cplan);
 #else
@@ -3240,6 +3248,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
             continue;
         }
 
+        ggml_cpu_profile_op_begin(state->ith);
         // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
         // Try fused ops, fall back to normal compute
         const int n_fused = ggml_cpu_try_fuse_ops(cgraph, node_n, &params, cplan);
@@ -3257,6 +3266,10 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
         if (node_n + 1 < cgraph->n_nodes) {
             ggml_barrier(state->threadpool);
+            ggml_cpu_profile_op_end(state->ith, node, n_fused);
+        } else {
+            profile_last_node = node;
+            profile_last_fused = n_fused;
         }
     }
 
@@ -3267,6 +3280,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 #endif
 
     ggml_barrier(state->threadpool);
+    if (profile_last_node != NULL) {
+        ggml_cpu_profile_op_end(state->ith, profile_last_node, profile_last_fused);
+    }
 
 #ifdef GGML_USE_CPU_RISCV64_SPACEMIT
     ggml_backend_cpu_riscv64_spacemit_clear_numa_thread_affinity_threaded(state->ith);
@@ -3554,6 +3570,8 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
     // This is a work thread too
     ggml_graph_compute_thread(&threadpool->workers[0]);
 #endif
+
+    ggml_cpu_profile_graph_end(cgraph, n_threads);
 
     // don't leave affinity set on the main thread
     clear_numa_thread_affinity();

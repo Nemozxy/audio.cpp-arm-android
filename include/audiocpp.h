@@ -51,7 +51,7 @@ extern "C" {
 /* ------------------------------------------------------------------ */
 
 #define AUDIOCPP_ABI_VERSION_MAJOR 0
-#define AUDIOCPP_ABI_VERSION_MINOR 4
+#define AUDIOCPP_ABI_VERSION_MINOR 5
 #define AUDIOCPP_ABI_VERSION_PATCH 0
 
 /* Packed as (major << 16) | (minor << 8) | patch. A caller built against a
@@ -110,6 +110,16 @@ typedef void (*audiocpp_log_callback)(audiocpp_log_level level,
  * user_data is forwarded to every callback invocation. */
 AUDIOCPP_API void audiocpp_log_set(audiocpp_log_callback log_callback,
                                    void * user_data);
+
+/* CPU audit diagnostics, added in ABI 0.5. Messages use the registered log
+ * callback. Profiling defaults to off and is intended for a separate diagnostic
+ * run because per-op timing and sampling add overhead. These controls require a
+ * statically linked CPU backend; GGML_BACKEND_DL builds keep profiling disabled. */
+AUDIOCPP_API void audiocpp_cpu_log_diagnostics(void);
+AUDIOCPP_API void audiocpp_cpu_profile_set_enabled(int enabled);
+AUDIOCPP_API int  audiocpp_cpu_profile_is_enabled(void);
+AUDIOCPP_API void audiocpp_cpu_profile_reset(void);
+AUDIOCPP_API void audiocpp_cpu_profile_log_summary(void);
 
 /* ------------------------------------------------------------------ */
 /* Handles                                                             */
