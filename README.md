@@ -139,6 +139,12 @@ For a model that reports `asr/offline`, the demo replaces the synthesis controls
 
 Only one model and session are retained. Switching bundled or imported models releases the previous session and model before loading the next one, avoiding simultaneous TTS and ASR model residency. Before ASR inference, JNI mixes mono or multichannel PCM WAV input to mono and uses the demo bridge's built-in linear resampler to convert it to 16 kHz. Non-16-kHz WAV files therefore work in the demo without a packaged `libsoxr`.
 
+#### Performance reports on physical devices
+
+After a TTS or ASR attempt, tap **Export performance log** and choose a destination in the system document picker. No storage permission or manual `adb logcat` capture is required. The UTF-8 report contains device/SoC and Android metadata, model and thread settings, ggml CPU features, model/session setup time, ASR encoder/prefill/decode stages, per-token decode timings and summary percentiles, TTS output duration/RTF, the final UI status, and native errors. Each new inference replaces the previous native report; export it before starting another run or closing the app.
+
+For comparable measurements, keep the APK, model, audio, thread count, and request options unchanged, and distinguish first-run session creation from later warm-session runs. The report includes the transcript and explicit option values, so review it before sharing. MuMu results come from an x86_64 host running ARM code through translation and are functional evidence only, not representative physical-device benchmarks.
+
 ### Runtime integration notes
 
 - Copy the complete model package from Android assets to an app-private directory such as `context.filesDir`; pass its absolute filesystem path to `audiocpp_model_load`.
@@ -159,6 +165,7 @@ Verified in this port:
 - Voice cloning through the document picker with a 7.616-second Chinese reference WAV and its transcript. The native request used `clon/offline` and 365,568 reference frames, then produced and played a non-silent 4.48-second, 48 kHz stereo WAV (215,040 output frames). Removing the reference and returning to `tts/offline` also passed.
 - Final-APK ASR with MOSS-Transcribe-Diarize Q4_K and a 7.616-second, 16 kHz mono Chinese WAV. The `asr/offline` request returned the reference sentence with `[0.06][S01]` and `[7.52]` markers after 234.0 seconds in the UI (229.7 seconds in the native session). ASR memory reached approximately 2.9 GB PSS on MuMu. The original 7.616-second, 48 kHz stereo WAV also passed through the built-in converter (365,568 frames to 121,856 mono frames), returned the same transcript, and completed in 108.6 seconds without SOXR.
 - Custom GGUF import through the document picker with a renamed MOSS-TTS-Nano file. The app auto-detected `moss_tts_nano`, restored its dynamic controls, synthesized and played a non-silent 8.8-second stereo WAV (422,400 frames) in 30.7 seconds, and restored the imported model after a cold restart.
+- Detailed ASR diagnostics and TXT export through the system document picker on the final APK. The saved report was read back and contained the correct transcript, device/ABI metadata, `NEON=1,ARM_FMA=1,REPACK=1`, 81.108-second encoder, 24.293-second prefill, and 117.810-second decode across 39 individually timed steps. Native total was 227.750 seconds with four threads. These translated-emulator timings validate the reporting path, not physical-device performance.
 
 Not yet verified:
 

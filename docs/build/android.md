@@ -155,6 +155,30 @@ Before calling MOSS-Transcribe-Diarize, the JNI bridge mixes mono or multichanne
 
 The final APK was tested on MuMu with a 7.616-second, 16 kHz mono Chinese WAV. It returned `[0.06][S01]它的目标是模拟、延伸和扩展人的智能，让机器能够胜任通常需要人类智慧才能完成的任务。[7.52]`. The UI reported 234.0 seconds including session setup, while the native session took 229.7 seconds and generated 39 tokens. A sampled ASR memory reading was approximately 2.9 GB PSS / 3.0 GB RSS. After adding the built-in converter, the original 7.616-second, 48 kHz stereo WAV was converted from 365,568 stereo frames to 121,856 mono frames and returned the same transcript in 108.6 seconds without SOXR.
 
+## Demo performance reports
+
+Tap **Export performance log** after any TTS or ASR attempt and save the UTF-8 text file through `ACTION_CREATE_DOCUMENT`. This works for successful and failed attempts, requires no broad storage permission, and avoids depending on a host `adb` connection. The report holds the most recent native inference attempt (up to 4 MiB of native diagnostics); starting another inference clears it, and it is not persisted across process restarts.
+
+The report includes:
+
+- app version, device model, SoC metadata where Android exposes it, supported ABIs, Android version, logical processor count, and heap limit;
+- model family/file, task, thread count, explicit options, final status, and transcript;
+- `backend.cpu.features`, which reports the ggml CPU implementation actually in use, including NEON, DOTPROD, FP16 vector arithmetic, and other available features;
+- model load and session creation time, WAV read/conversion, request setup, total inference, and output details;
+- MOSS-Transcribe-Diarize prompt/embedding, Mel extraction, Whisper graph compute, adaptor, prefill, total decode, every decode step, and decode mean/p50/p95/max timings;
+- MOSS-TTS inference time, generated audio duration, and real-time factor (RTF).
+
+For a physical-device baseline, use the portable APK, select the same input WAV, keep model parameters at their defaults, and record the thread count. Export the first run and at least one later run without changing settings: the first includes session construction, while later runs reuse the session. Change exactly one variable between comparison groups. The report contains the transcript and explicit option values; review it before sharing.
+
+The demo helper also accepts an optional ggml ARM architecture as its second argument and an independent build root through `ANDROID_DEMO_BUILD_ROOT`:
+
+```bash
+ANDROID_DEMO_BUILD_ROOT="$PWD/build/android-dotprod" \
+  bash android-demo/build_native.sh /path/to/android-ndk 'armv8.2-a+dotprod'
+```
+
+Use the resulting APK only on devices that support the selected instructions. Compare its `backend.cpu.features` and timings against the portable build on the same physical device. An x86_64 emulator with ARM translation is useful for loading, correctness, crash, and report-export checks, but its timings must not be presented as physical ARM benchmark results.
+
 ## On-device smoke test
 
 Connect exactly one ARM Android device with USB debugging enabled, then select the matching ABI below. The test checks ABI compatibility, registry creation, and built-in task/model registration; it does not run model inference.

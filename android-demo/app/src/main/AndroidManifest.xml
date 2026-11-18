@@ -10,6 +10,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AudioCppDemo"
         android:usesCleartextTraffic="false">
+        <!-- Performance reports are exported through the system document picker. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

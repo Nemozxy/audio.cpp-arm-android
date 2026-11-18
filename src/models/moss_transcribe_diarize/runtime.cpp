@@ -185,6 +185,7 @@ public:
     void start(const runtime::AudioBuffer & audio, const std::string & instruction, int64_t max_tokens) {
         reset();
         const auto started = std::chrono::steady_clock::now();
+        const auto input_started = started;
         auto samples = audio::convert_interleaved_audio_to_mono_linear_resampled(
             audio.samples, audio.sample_rate, audio.channels, audio.sample_rate);
         if (audio.sample_rate != 16000) {
@@ -200,6 +201,8 @@ public:
         if (samples.empty() || max_tokens <= 0) {
             throw std::runtime_error("MOSS-Transcribe-Diarize requires nonempty audio and positive max_tokens");
         }
+        debug::timing_log_scalar("moss_transcribe_diarize.input_convert_ms", debug::elapsed_ms(input_started));
+        const auto prompt_started = std::chrono::steady_clock::now();
         const int64_t audio_tokens = (static_cast<int64_t>(samples.size()) + 1279) / 1280;
         auto ids = tokenizer_->encode("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<|audio_start|>");
         std::vector<size_t> audio_positions;
@@ -221,6 +224,9 @@ public:
         if (static_cast<int64_t>(ids.size()) + max_tokens > max_context_) {
             throw std::runtime_error("MOSS-Transcribe-Diarize audio/prompt plus max_tokens exceeds context");
         }
+        debug::timing_log_scalar("moss_transcribe_diarize.prompt_build_ms", debug::elapsed_ms(prompt_started));
+        debug::timing_log_scalar("moss_transcribe_diarize.prompt_tokens", static_cast<int64_t>(ids.size()));
+        const auto embedding_started = std::chrono::steady_clock::now();
         std::vector<float> embeddings(ids.size() * kHidden);
         std::vector<int32_t> block(kLookupSteps, 0);
         for (size_t offset = 0; offset < ids.size(); offset += kLookupSteps) {
@@ -233,25 +239,42 @@ public:
             const auto values = core::read_tensor_f32(lookup_output_.tensor);
             std::copy_n(values.begin(), count * kHidden, embeddings.begin() + offset * kHidden);
         }
+        debug::timing_log_scalar("moss_transcribe_diarize.embedding_ms", debug::elapsed_ms(embedding_started));
+        debug::timing_log_scalar("moss_transcribe_diarize.lookup_graph_nodes", ggml_graph_n_nodes(lookup_graph_));
+        const auto audio_frontend_started = std::chrono::steady_clock::now();
+        double mel_ms = 0.0;
+        double whisper_ms = 0.0;
+        double adaptor_ms = 0.0;
         std::vector<float> chunk(kChunkSamples, 0.f);
         size_t audio_offset = 0;
         for (size_t offset = 0; offset < samples.size(); offset += kChunkSamples) {
             const size_t count = std::min<size_t>(kChunkSamples, samples.size() - offset);
             std::fill(chunk.begin(), chunk.end(), 0.f);
             std::copy_n(samples.begin() + offset, count, chunk.begin());
+            auto stage_started = std::chrono::steady_clock::now();
             auto mel = mel_.compute(chunk, execution_.config().threads);
+            mel_ms += debug::elapsed_ms(stage_started);
+            stage_started = std::chrono::steady_clock::now();
             const auto encoded = whisper_.encode_log_mel(mel.values);
+            whisper_ms += debug::elapsed_ms(stage_started);
+            stage_started = std::chrono::steady_clock::now();
             core::write_tensor_f32(adaptor_input_, encoded);
             if (core::compute_graph(execution_, adaptor_graph_, adaptor_plan_) != GGML_STATUS_SUCCESS) {
                 throw std::runtime_error("MOSS-Transcribe-Diarize adaptor compute failed");
             }
             const auto adapted = core::read_tensor_f32(adaptor_output_.tensor);
+            adaptor_ms += debug::elapsed_ms(stage_started);
             const size_t tokens = (count + 1279) / 1280;
             for (size_t t = 0; t < tokens; ++t) {
                 std::copy_n(adapted.begin() + t * kHidden, kHidden,
                     embeddings.begin() + audio_positions.at(audio_offset++) * kHidden);
             }
         }
+        debug::timing_log_scalar("moss_transcribe_diarize.audio_frontend_ms", debug::elapsed_ms(audio_frontend_started));
+        debug::timing_log_scalar("moss_transcribe_diarize.mel_ms", mel_ms);
+        debug::timing_log_scalar("moss_transcribe_diarize.whisper_encoder_ms", whisper_ms);
+        debug::timing_log_scalar("moss_transcribe_diarize.adaptor_ms", adaptor_ms);
+        debug::timing_log_scalar("moss_transcribe_diarize.adaptor_graph_nodes", ggml_graph_n_nodes(adaptor_graph_));
         debug::timing_log_scalar("moss_transcribe_diarize.frontend_ms", debug::elapsed_ms(started));
         const auto prefill_started = std::chrono::steady_clock::now();
         logits_ = qwen3_runtime_->prefill_embeddings_into_cache(embeddings, static_cast<int64_t>(ids.size()),
@@ -268,12 +291,34 @@ public:
         }
         while (static_cast<int64_t>(generated_.size()) < max_tokens_) {
             if (!generated_.empty()) {
+                const auto step_started = std::chrono::steady_clock::now();
                 logits_ = qwen3_runtime_->decode_token(generated_.back()).logits;
+                const double step_ms = debug::elapsed_ms(step_started);
+                decode_step_ms_.push_back(step_ms);
+                debug::timing_log_scalar("moss_transcribe_diarize.decode.step." +
+                    std::to_string(decode_step_ms_.size()) + "_ms", step_ms);
             }
             const int32_t token = sampling::HfLogitsProcessor::argmax(logits_.data(), logits_.size(), "MOSS-Transcribe-Diarize");
             if (token == kEosToken) {
                 active_ = false;
                 debug::trace_log_scalar("moss_transcribe_diarize.generated_tokens", static_cast<int64_t>(generated_.size()));
+                if (!decode_step_ms_.empty()) {
+                    std::vector<double> sorted = decode_step_ms_;
+                    std::sort(sorted.begin(), sorted.end());
+                    double total_ms = 0.0;
+                    for (double value : sorted) {
+                        total_ms += value;
+                    }
+                    debug::timing_log_scalar("moss_transcribe_diarize.decode_step_count",
+                        static_cast<int64_t>(sorted.size()));
+                    debug::timing_log_scalar("moss_transcribe_diarize.decode_step_mean_ms",
+                        total_ms / sorted.size());
+                    debug::timing_log_scalar("moss_transcribe_diarize.decode_step_p50_ms",
+                        sorted[(sorted.size() - 1) / 2]);
+                    debug::timing_log_scalar("moss_transcribe_diarize.decode_step_p95_ms",
+                        sorted[static_cast<size_t>((sorted.size() - 1) * 0.95)]);
+                    debug::timing_log_scalar("moss_transcribe_diarize.decode_step_max_ms", sorted.back());
+                }
                 if (partials_.published().size() != decoded_text_.size()) {
                     throw std::runtime_error("MOSS-Transcribe-Diarize ended with incomplete UTF-8 text");
                 }
@@ -293,6 +338,7 @@ public:
     void reset() {
         active_ = false;
         generated_.clear();
+        decode_step_ms_.clear();
         logits_.clear();
         decoded_text_.clear();
         partials_.reset();
@@ -313,6 +359,7 @@ private:
     std::string decoded_text_;
     runtime::PartialTextPublisher partials_;
     std::vector<int32_t> generated_;
+    std::vector<double> decode_step_ms_;
     std::vector<float> logits_;
     int64_t max_context_ = 0;
     float audio_rate_ = 12.5f;
@@ -333,10 +380,12 @@ TranscribeRuntime::TranscribeRuntime(const assets::ResourceBundle & resources, c
 TranscribeRuntime::~TranscribeRuntime() = default;
 std::string TranscribeRuntime::transcribe(const runtime::AudioBuffer & audio, const std::string & instruction, int64_t max_tokens) {
     start(audio, instruction, max_tokens);
+    const auto decode_started = std::chrono::steady_clock::now();
     std::string text;
     while (auto delta = next_text()) {
         text += *delta;
     }
+    debug::timing_log_scalar("moss_transcribe_diarize.decode_ms", debug::elapsed_ms(decode_started));
     return text;
 }
 void TranscribeRuntime::start(const runtime::AudioBuffer & audio, const std::string & instruction, int64_t max_tokens) {

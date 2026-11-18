@@ -1,7 +1,10 @@
 #include "engine/framework/core/execution_context.h"
 
+#include "engine/framework/debug/trace.h"
+
 #include <cmath>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace engine::core {
@@ -13,6 +16,27 @@ ExecutionContext::ExecutionContext(const BackendConfig & config, float moe_cpu_s
     backend_ = init_backend(config);
     if (backend_ != nullptr && config_.threads > 0) {
         set_backend_threads(backend_, config_.threads);
+    }
+    ggml_backend_dev_t device = backend_ == nullptr ? nullptr : ggml_backend_get_device(backend_);
+    if (device != nullptr && ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+        debug::timing_log_scalar("backend.cpu.device", ggml_backend_dev_description(device));
+        debug::timing_log_scalar("backend.cpu.threads", static_cast<int64_t>(config_.threads));
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(device);
+        auto get_features = reinterpret_cast<ggml_backend_get_features_t>(
+            ggml_backend_reg_get_proc_address(reg, "ggml_backend_get_features"));
+        if (get_features != nullptr) {
+            std::string features;
+            for (ggml_backend_feature * feature = get_features(reg);
+                 feature != nullptr && feature->name != nullptr; ++feature) {
+                if (!features.empty()) {
+                    features += ',';
+                }
+                features += feature->name;
+                features += '=';
+                features += feature->value == nullptr ? "" : feature->value;
+            }
+            debug::timing_log_scalar("backend.cpu.features", features);
+        }
     }
 }
 

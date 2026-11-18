@@ -12,6 +12,9 @@ final class NativeTts {
 
     static native String nativeVersion();
 
+    /** Returns native diagnostics for the most recent inference attempt. */
+    static native String performanceReport();
+
     /** Returns model capabilities and declared options as JSON. */
     static native String inspectModel(String modelPath);
 

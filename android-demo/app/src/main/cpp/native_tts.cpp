@@ -5,7 +5,9 @@
 #include "engine/framework/audio/wav_reader.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -84,6 +86,59 @@ void check(audiocpp_status status, const char * operation) {
     }
 }
 
+std::mutex g_diagnostic_mutex;
+std::string g_diagnostic_log;
+bool g_diagnostic_truncated = false;
+constexpr size_t kDiagnosticLogLimit = 4 * 1024 * 1024;
+
+void append_diagnostic_log(const char * text) {
+    if (text == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_diagnostic_mutex);
+    if (g_diagnostic_log.size() >= kDiagnosticLogLimit) {
+        if (!g_diagnostic_truncated) {
+            g_diagnostic_log += "[log truncated after 4 MiB]\n";
+            g_diagnostic_truncated = true;
+        }
+        return;
+    }
+    g_diagnostic_log += text;
+    if (!g_diagnostic_log.empty() && g_diagnostic_log.back() != '\n') {
+        g_diagnostic_log += '\n';
+    }
+    if (g_diagnostic_log.size() > kDiagnosticLogLimit) {
+        g_diagnostic_log.resize(kDiagnosticLogLimit);
+        g_diagnostic_log += "\n[log truncated after 4 MiB]\n";
+        g_diagnostic_truncated = true;
+    }
+}
+
+void native_log(int priority, const char * tag, const char * format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    va_list measure;
+    va_copy(measure, arguments);
+    const int length = vsnprintf(nullptr, 0, format, measure);
+    va_end(measure);
+    if (length >= 0) {
+        std::vector<char> message(static_cast<size_t>(length) + 1);
+        vsnprintf(message.data(), message.size(), format, arguments);
+        __android_log_write(priority, tag, message.data());
+        append_diagnostic_log(message.data());
+    }
+    va_end(arguments);
+}
+
+void begin_diagnostic_log(const char * task, int threads) {
+    {
+        std::lock_guard<std::mutex> lock(g_diagnostic_mutex);
+        g_diagnostic_log.clear();
+        g_diagnostic_truncated = false;
+    }
+    native_log(ANDROID_LOG_INFO, "AudioCppNative", "Run started: task=%s threads=%d", task, threads);
+}
+
 void log_callback(audiocpp_log_level level, const char * text, void *) {
     int priority = ANDROID_LOG_DEBUG;
     switch (level) {
@@ -94,6 +149,7 @@ void log_callback(audiocpp_log_level level, const char * text, void *) {
     }
     if (text != nullptr) {
         __android_log_write(priority, "AudioCppNative", text);
+        append_diagnostic_log(text);
     }
 }
 
@@ -163,6 +219,7 @@ void ensure_model(const char * model_path, const std::vector<OptionInput> & inpu
         return;
     }
 
+    const auto started = std::chrono::steady_clock::now();
     clear_model();
     initialize_temp_directory(model_path);
     audiocpp_log_set(log_callback, nullptr);
@@ -179,6 +236,10 @@ void ensure_model(const char * model_path, const std::vector<OptionInput> & inpu
           "自动识别并加载模型");
     g_model_path = model_path;
     g_load_signature = signature;
+    const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    native_log(ANDROID_LOG_INFO, "AudioCppNative",
+                        "Model loaded: %.3f ms", elapsed);
 }
 
 void ensure_session(const char * model_path, const char * task, int threads,
@@ -193,6 +254,7 @@ void ensure_session(const char * model_path, const char * task, int threads,
         return;
     }
 
+    const auto started = std::chrono::steady_clock::now();
     clear_session();
     OptionsGuard session_options;
     apply_options(session_options.value, inputs, AUDIOCPP_OPTION_SCOPE_SESSION);
@@ -200,8 +262,10 @@ void ensure_session(const char * model_path, const char * task, int threads,
     check(audiocpp_session_create(g_model, task, "offline", &backend,
                                   session_options.value, &g_session),
           "创建 CPU 语音会话");
-    __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
-                        "Session created: %s/offline", task);
+    const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    native_log(ANDROID_LOG_INFO, "AudioCppNative",
+                        "Session created: %s/offline, %.3f ms, threads=%d", task, elapsed, threads);
     g_session_signature = signature;
 }
 
@@ -349,6 +413,8 @@ std::vector<OptionInput> read_options(JNIEnv * env, jintArray scopes,
             throw std::invalid_argument("模型参数名称或值为空");
         }
         inputs.push_back({scope, key_chars.value, value_chars.value});
+        native_log(ANDROID_LOG_INFO, "AudioCppNative", "Option: scope=%d %s=%s",
+                   scope, key_chars.value, value_chars.value);
     }
     return inputs;
 }
@@ -496,6 +562,12 @@ Java_com_audiocpp_ttsdemo_NativeTts_nativeVersion(JNIEnv * env, jclass) {
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_audiocpp_ttsdemo_NativeTts_performanceReport(JNIEnv * env, jclass) {
+    std::lock_guard<std::mutex> lock(g_diagnostic_mutex);
+    return java_string(env, g_diagnostic_log);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_audiocpp_ttsdemo_NativeTts_inspectModel(JNIEnv * env, jclass, jstring model_path) {
     UtfChars model(env, model_path);
     if (model.value == nullptr) {
@@ -507,7 +579,7 @@ Java_com_audiocpp_ttsdemo_NativeTts_inspectModel(JNIEnv * env, jclass, jstring m
         ensure_model(model.value, {});
         return java_string(env, model_inspection_json());
     } catch (const std::exception & error) {
-        __android_log_print(ANDROID_LOG_ERROR, "AudioCppNative", "%s", error.what());
+        native_log(ANDROID_LOG_ERROR, "AudioCppNative", "%s", error.what());
         throw_java(env, error.what());
     } catch (...) {
         throw_java(env, "读取模型参数时发生未知错误");
@@ -529,6 +601,8 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
     }
 
     try {
+        const auto total_started = std::chrono::steady_clock::now();
+        begin_diagnostic_log("tts", threads);
         const auto inputs = read_options(env, scopes, keys, values);
         const bool has_reference = reference_audio.value != nullptr && *reference_audio.value != '\0';
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -538,7 +612,11 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
         }
         const char * task = has_reference ? "clon" :
             (audiocpp_model_supports(g_model, "tts", "offline") == 1 ? "tts" : "clon");
+        native_log(ANDROID_LOG_INFO, "AudioCppNative", "Resolved task: %s/offline", task);
+        const auto session_started = std::chrono::steady_clock::now();
         ensure_session(model.value, task, threads, inputs);
+        const double session_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - session_started).count();
 
         RequestGuard request;
         if (request.value == nullptr) {
@@ -555,7 +633,7 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
             check(audiocpp_request_set_voice_audio(request.value, wav.samples.data(),
                                                    reference_frames, wav.sample_rate, wav.channels),
                   "设置语音克隆参考音频");
-            __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+            native_log(ANDROID_LOG_INFO, "AudioCppNative",
                                 "Voice reference: %zu frames, %d Hz, %d channels",
                                 reference_frames, wav.sample_rate, wav.channels);
         }
@@ -566,8 +644,11 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
             }
         }
 
+        const auto inference_started = std::chrono::steady_clock::now();
         ResultGuard result;
         check(audiocpp_session_run(g_session, request.value, &result.value), "执行语音合成推理");
+        const double inference_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - inference_started).count();
 
         const float * samples = nullptr;
         size_t frames = 0;
@@ -576,12 +657,19 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
         check(audiocpp_result_audio(result.value, &samples, &frames, &sample_rate, &channels),
               "读取合成音频");
         write_wav(output.value, samples, frames, sample_rate, channels);
-        __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+        native_log(ANDROID_LOG_INFO, "AudioCppNative",
                             "WAV written: %zu frames, %d Hz, %d channels",
                             frames, sample_rate, channels);
+        const double total_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - total_started).count();
+        const double output_seconds = sample_rate > 0 ? static_cast<double>(frames) / sample_rate : 0.0;
+        native_log(ANDROID_LOG_INFO, "AudioCppNative",
+                   "TTS timing: session=%.3f ms inference=%.3f ms total=%.3f ms output=%.3f s rtf=%.6f threads=%d",
+                   session_ms, inference_ms, total_ms, output_seconds,
+                   output_seconds > 0 ? total_ms / (output_seconds * 1000.0) : 0.0, threads);
         return nullptr;
     } catch (const std::exception & error) {
-        __android_log_print(ANDROID_LOG_ERROR, "AudioCppNative", "%s", error.what());
+        native_log(ANDROID_LOG_ERROR, "AudioCppNative", "%s", error.what());
         return java_string(env, error.what());
     } catch (...) {
         return java_string(env, "原生合成发生未知错误");
@@ -601,24 +689,37 @@ Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
     }
 
     try {
+        const auto total_started = std::chrono::steady_clock::now();
+        begin_diagnostic_log("asr", threads);
+        auto elapsed_ms = [](std::chrono::steady_clock::time_point started) {
+            return std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count();
+        };
+        auto stage_started = total_started;
         const auto inputs = read_options(env, scopes, keys, values);
         const auto wav = engine::audio::read_wav_f32(std::filesystem::path(input_audio.value));
         if (wav.samples.empty() || wav.channels <= 0 || wav.sample_rate <= 0) {
             throw std::runtime_error("输入音频没有有效的 PCM 内容");
         }
+        const double wav_read_ms = elapsed_ms(stage_started);
+        stage_started = std::chrono::steady_clock::now();
         const size_t input_frames = wav.samples.size() / static_cast<size_t>(wav.channels);
         const auto samples = convert_asr_wav_to_16k_mono(wav);
         const size_t frames = samples.size();
+        const double convert_ms = elapsed_ms(stage_started);
 
+        stage_started = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(g_mutex);
         ensure_session(model.value, "asr", threads, inputs);
+        const double session_ms = elapsed_ms(stage_started);
+        stage_started = std::chrono::steady_clock::now();
         RequestGuard request;
         if (request.value == nullptr) {
             throw std::runtime_error("创建识别请求失败");
         }
         check(audiocpp_request_set_audio(request.value, samples.data(), frames, 16000, 1),
               "设置识别音频");
-        __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+        native_log(ANDROID_LOG_INFO, "AudioCppNative",
                             "ASR input: %zu frames, %d Hz, %d channels -> %zu frames, 16000 Hz, mono",
                             input_frames, wav.sample_rate, wav.channels, frames);
         for (const auto & input : inputs) {
@@ -627,9 +728,12 @@ Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
                       "设置请求参数");
             }
         }
+        const double request_ms = elapsed_ms(stage_started);
 
+        stage_started = std::chrono::steady_clock::now();
         ResultGuard result;
         check(audiocpp_session_run(g_session, request.value, &result.value), "执行语音识别推理");
+        const double inference_ms = elapsed_ms(stage_started);
         const char * text = nullptr;
         const char * language = nullptr;
         check(audiocpp_result_text(result.value, &text, &language), "读取识别文本");
@@ -639,11 +743,15 @@ Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
         append_json_name(json, "language");
         json += json_string(language == nullptr ? "" : language);
         json += '}';
-        __android_log_print(ANDROID_LOG_INFO, "AudioCppNative",
+        native_log(ANDROID_LOG_INFO, "AudioCppNative",
                             "ASR result: %zu UTF-8 bytes", text == nullptr ? 0u : std::char_traits<char>::length(text));
+        native_log(ANDROID_LOG_INFO, "AudioCppNative",
+                            "ASR timing: wav_read=%.3f ms convert=%.3f ms session=%.3f ms request=%.3f ms inference=%.3f ms total=%.3f ms threads=%d",
+                            wav_read_ms, convert_ms, session_ms, request_ms, inference_ms,
+                            elapsed_ms(total_started), threads);
         return java_string(env, json);
     } catch (const std::exception & error) {
-        __android_log_print(ANDROID_LOG_ERROR, "AudioCppNative", "%s", error.what());
+        native_log(ANDROID_LOG_ERROR, "AudioCppNative", "%s", error.what());
         throw_java(env, error.what());
     } catch (...) {
         throw_java(env, "原生识别发生未知错误");

@@ -10,6 +10,9 @@
     <string name="task_label">任务</string>
     <string name="task_tts">语音合成</string>
     <string name="task_asr">语音识别</string>
+    <string name="threads_label">推理线程</string>
+    <string name="threads_hint">1～32</string>
+    <string name="threads_default">4</string>
     <string name="input_label">要合成的文字</string>
     <string name="default_text">你好，这是 audio.cpp 在安卓模拟器上的离线语音合成测试。</string>
     <string name="reference_title">语音克隆（可选）</string>
@@ -31,6 +34,9 @@
     <string name="transcribe">开始识别</string>
     <string name="play">重新播放</string>
     <string name="transcript_title">识别结果</string>
+    <string name="export_performance">导出性能日志</string>
+    <string name="performance_exported">性能日志已保存，可将该文本文件发给开发者</string>
+    <string name="performance_export_failed">性能日志保存失败：%1$s</string>
     <string name="loading_native">正在加载 ARM64 原生库…</string>
     <string name="extracting_model">首次使用正在解压所选模型，请稍候…</string>
     <string name="detecting_model">正在自动识别模型并读取其参数…</string>

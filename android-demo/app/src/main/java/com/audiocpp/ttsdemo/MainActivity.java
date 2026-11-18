@@ -8,6 +8,7 @@ import android.database.Cursor;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.util.Log;
@@ -44,6 +45,7 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_REFERENCE_AUDIO = 42;
     private static final int REQUEST_ASR_AUDIO = 43;
     private static final int REQUEST_GGUF_MODEL = 44;
+    private static final int REQUEST_EXPORT_PERFORMANCE = 45;
 
     private static final class TaskEntry {
         final String id;
@@ -64,6 +66,7 @@ public final class MainActivity extends Activity {
     private final List<TaskEntry> tasks = new ArrayList<>();
 
     private EditText inputText;
+    private EditText threadsInput;
     private Button synthesizeButton;
     private Button playButton;
     private Button resetOptionsButton;
@@ -73,6 +76,7 @@ public final class MainActivity extends Activity {
     private Button builtinTtsButton;
     private Button builtinAsrButton;
     private Button importModelButton;
+    private Button exportPerformanceButton;
     private ProgressBar progress;
     private TextView modelName;
     private TextView modelStatus;
@@ -96,9 +100,11 @@ public final class MainActivity extends Activity {
     private String asrAudioName;
     private String nativeVersion = "";
     private String modelFamily = "";
+    private String pendingPerformanceReport;
     private MediaPlayer player;
     private boolean modelReady;
     private boolean busy;
+    private boolean hasPerformanceReport;
     private boolean supportsTts;
     private boolean supportsClon;
     private boolean speakerReferenceSupported;
@@ -109,6 +115,7 @@ public final class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         inputText = findViewById(R.id.inputText);
+        threadsInput = findViewById(R.id.threadsInput);
         synthesizeButton = findViewById(R.id.synthesizeButton);
         playButton = findViewById(R.id.playButton);
         resetOptionsButton = findViewById(R.id.resetOptionsButton);
@@ -118,6 +125,7 @@ public final class MainActivity extends Activity {
         builtinTtsButton = findViewById(R.id.builtinTtsButton);
         builtinAsrButton = findViewById(R.id.builtinAsrButton);
         importModelButton = findViewById(R.id.importModelButton);
+        exportPerformanceButton = findViewById(R.id.exportPerformanceButton);
         progress = findViewById(R.id.progress);
         modelName = findViewById(R.id.modelName);
         modelStatus = findViewById(R.id.modelStatus);
@@ -142,6 +150,7 @@ public final class MainActivity extends Activity {
 
         synthesizeButton.setOnClickListener(view -> runSelectedTask());
         playButton.setOnClickListener(view -> playAudio());
+        exportPerformanceButton.setOnClickListener(view -> exportPerformanceReport());
         builtinTtsButton.setOnClickListener(view -> selectModel(ttsModelFile, TTS_MODEL_ASSET));
         builtinAsrButton.setOnClickListener(view -> selectModel(asrModelFile, ASR_MODEL_ASSET));
         importModelButton.setOnClickListener(view -> selectGgufModel());
@@ -269,10 +278,44 @@ public final class MainActivity extends Activity {
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
+        if (requestCode == REQUEST_EXPORT_PERFORMANCE) {
+            if (pendingPerformanceReport != null) {
+                try {
+                    PerformanceReport.write(this, data.getData(), pendingPerformanceReport);
+                    statusText.setText(R.string.performance_exported);
+                } catch (Exception error) {
+                    Log.e(TAG, "Performance report export failed", error);
+                    showError(getString(R.string.performance_export_failed, readableMessage(error)));
+                } finally {
+                    pendingPerformanceReport = null;
+                }
+            }
+            return;
+        }
         if (requestCode == REQUEST_GGUF_MODEL) {
             importGgufModel(data.getData());
         } else if (requestCode == REQUEST_REFERENCE_AUDIO || requestCode == REQUEST_ASR_AUDIO) {
             importAudio(data.getData(), requestCode == REQUEST_REFERENCE_AUDIO);
+        }
+    }
+
+    private void exportPerformanceReport() {
+        if (busy || !hasPerformanceReport) {
+            return;
+        }
+        pendingPerformanceReport = PerformanceReport.build(this, nativeVersion, modelFamily,
+                modelFile == null ? "" : modelFile.getName(), currentTask(),
+                threadsInput.getText().toString(), statusText.getText().toString(),
+                transcriptText.getText().toString());
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TITLE, PerformanceReport.fileName(currentTask()));
+        try {
+            startActivityForResult(intent, REQUEST_EXPORT_PERFORMANCE);
+        } catch (Exception error) {
+            pendingPerformanceReport = null;
+            showError(getString(R.string.performance_export_failed, readableMessage(error)));
         }
     }
 
@@ -498,6 +541,7 @@ public final class MainActivity extends Activity {
         synthesizeButton.setText(tts ? R.string.synthesize : R.string.transcribe);
         synthesizeButton.setEnabled(modelReady && !busy);
         resetOptionsButton.setEnabled(modelReady && !busy);
+        threadsInput.setEnabled(modelReady && !busy);
         taskSpinner.setEnabled(modelReady && !busy && tasks.size() > 1);
         selectReferenceButton.setEnabled(modelReady && !busy && tts && speakerReferenceSupported);
         clearReferenceButton.setEnabled(modelReady && !busy && tts && referenceFile.isFile());
@@ -506,6 +550,7 @@ public final class MainActivity extends Activity {
         builtinTtsButton.setEnabled(!busy);
         builtinAsrButton.setEnabled(!busy);
         importModelButton.setEnabled(!busy);
+        exportPerformanceButton.setEnabled(hasPerformanceReport && !busy);
     }
 
     private void runSelectedTask() {
@@ -525,6 +570,18 @@ public final class MainActivity extends Activity {
         return parameterPanel.collect();
     }
 
+    private int readThreads() {
+        try {
+            int threads = Integer.parseInt(threadsInput.getText().toString().trim());
+            if (threads < 1 || threads > 32) {
+                throw new NumberFormatException();
+            }
+            return threads;
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException("推理线程数需为 1～32 的整数");
+        }
+    }
+
     private void synthesize() {
         String text = inputText.getText().toString().trim();
         if (text.isEmpty()) {
@@ -536,8 +593,10 @@ public final class MainActivity extends Activity {
             return;
         }
         ParameterPanel.Values options;
+        int threads;
         try {
             options = collectOptions();
+            threads = readThreads();
         } catch (IllegalArgumentException error) {
             showError(error.getMessage());
             return;
@@ -545,6 +604,7 @@ public final class MainActivity extends Activity {
         String selectedModel = modelFile.getAbsolutePath();
         String referencePath = speakerReferenceSupported && referenceFile.isFile()
                 ? referenceFile.getAbsolutePath() : null;
+        hasPerformanceReport = true;
         setBusy(true);
         playButton.setEnabled(false);
         statusText.setText(R.string.working);
@@ -553,7 +613,7 @@ public final class MainActivity extends Activity {
             String error;
             try {
                 error = NativeTts.synthesize(selectedModel, text, wavFile.getAbsolutePath(),
-                        referencePath, 4, options.scopes, options.keys, options.values);
+                        referencePath, threads, options.scopes, options.keys, options.values);
             } catch (Throwable failure) {
                 Log.e(TAG, "Synthesis failed", failure);
                 error = readableMessage(failure);
@@ -580,14 +640,17 @@ public final class MainActivity extends Activity {
             return;
         }
         ParameterPanel.Values options;
+        int threads;
         try {
             options = collectOptions();
+            threads = readThreads();
         } catch (IllegalArgumentException error) {
             showError(error.getMessage());
             return;
         }
         String selectedModel = modelFile.getAbsolutePath();
         String inputPath = asrAudioFile.getAbsolutePath();
+        hasPerformanceReport = true;
         setBusy(true);
         transcriptTitle.setVisibility(View.GONE);
         transcriptText.setVisibility(View.GONE);
@@ -598,7 +661,7 @@ public final class MainActivity extends Activity {
             String language = "";
             String error = null;
             try {
-                JSONObject result = new JSONObject(NativeTts.transcribe(selectedModel, inputPath, 4,
+                JSONObject result = new JSONObject(NativeTts.transcribe(selectedModel, inputPath, threads,
                         options.scopes, options.keys, options.values));
                 transcript = result.optString("text");
                 language = result.optString("language");
