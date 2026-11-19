@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="option_none">该模型未声明额外参数</string>
+    <string name="option_advanced_open">高级设置（%1$d 项）</string>
+    <string name="option_advanced_close">收起高级设置</string>
+    <string name="option_scope_request">单次推理</string>
+    <string name="option_scope_session">会话（修改后重建会话）</string>
+    <string name="option_scope_load">模型加载（修改后重新加载模型）</string>
+    <string name="option_use_default">使用模型默认设置</string>
+    <string name="option_choice_default">模型默认（%1$s）</string>
+    <string name="option_default_value">默认值：%1$s</string>
+    <string name="option_value_required">必填</string>
+    <string name="option_required">此项必填</string>
+    <string name="option_list_unsupported">此项是列表参数，本 Demo 不支持编辑</string>
+    <string name="option_on">开启</string>
+    <string name="option_off">关闭</string>
+    <string name="option_invalid_integer">请输入整数</string>
+    <string name="option_invalid_decimal">请输入有效数字</string>
+    <string name="option_range">范围：%1$s～%2$s</string>
+    <string name="option_minimum">最小值：%1$s</string>
+    <string name="option_maximum">最大值：%1$s</string>
+    <string name="option_positive">必须大于 0</string>
+
+    <string name="option_reference_text">参考录音文字稿</string>
+    <string name="option_reference_text_help">可选。填写录音里实际说的话，不是这次要合成的内容。</string>
+    <string name="option_audio_frame_limit">生成长度上限（音频帧）</string>
+    <string name="option_audio_frame_limit_help">限制每段生成的音频帧数。设得太低可能读不完文字；这不是语速。</string>
+    <string name="option_transcript_limit">转写长度上限（词元）</string>
+    <string name="option_transcript_limit_help">限制模型输出的词元数，不等于字数。设得太低会截断转写结果。</string>
+    <string name="option_transcription_prompt">自定义转写指令</string>
+    <string name="option_transcription_prompt_help">模型默认按说话人和时间转写。自定义指令会替换默认提示，可能改变输出格式或丢失说话人标签。</string>
+    <string name="option_recognition_language">识别语言</string>
+    <string name="option_recognition_language_help">留空自动识别；也可指定语言，例如 zh（中文）或 en（英语）。</string>
+    <string name="option_synthesis_language">合成语言</string>
+    <string name="option_synthesis_language_help">默认根据文字和音色判断，也可指定语言，例如 zh（中文）或 en（英语）。</string>
+    <string name="option_voice">音色</string>
+    <string name="option_kokoro_voice_help">音色带有对应的语言或口音；请选择与合成文字匹配的音色。</string>
+    <string name="option_speed">语速倍率</string>
+    <string name="option_speed_help">1 是原速；低于 1 更慢，高于 1 更快。</string>
+
+    <string name="option_codebooks">音频码本数量</string>
+    <string name="option_codebooks_help">控制生成时使用的码本数量。默认使用模型的全部码本，不可超过模型支持的数量。</string>
+    <string name="option_sampling">随机采样</string>
+    <string name="option_sampling_help">开启时从候选中随机选择；关闭时每步选择概率最高的候选。</string>
+    <string name="option_audio_temperature">音频采样温度</string>
+    <string name="option_text_temperature">文本采样温度</string>
+    <string name="option_temperature_help">越低越偏向高概率候选；越高越有变化，也更容易不稳定。</string>
+    <string name="option_audio_top_p">音频候选概率（Top P）</string>
+    <string name="option_text_top_p">文本候选概率（Top P）</string>
+    <string name="option_top_p_help">按累计概率保留高概率候选，值越小，候选范围越窄。</string>
+    <string name="option_audio_top_k">音频候选数量（Top K）</string>
+    <string name="option_text_top_k">文本候选数量（Top K）</string>
+    <string name="option_top_k_help">最多从概率最高的指定数量候选中采样；0 表示不限制候选数量。</string>
+    <string name="option_repetition_penalty">音频重复惩罚</string>
+    <string name="option_repetition_penalty_help">1 表示不惩罚；提高数值会减少重复，但也可能影响发音。</string>
+    <string name="option_seed">随机种子</string>
+    <string name="option_seed_help">固定种子便于在相同输入和设置下复现采样；留空会随机选取种子。</string>
+    <string name="option_text_chunk_size">长文本分段大小</string>
+    <string name="option_text_chunk_size_help">控制每段文字的大小。默认值随文本语言变化；分得太短可能影响停顿和连贯性。</string>
+    <string name="option_text_chunk_mode">长文本分段方式</string>
+    <string name="option_text_chunk_mode_help">决定长文本在哪里拆段，不影响语速。</string>
+    <string name="option_chunk_default">常规分段</string>
+    <string name="option_chunk_tags">识别标签边界</string>
+    <string name="option_chunk_japanese">按日文规则</string>
+    <string name="option_chunk_endline">按换行分段</string>
+</resources>

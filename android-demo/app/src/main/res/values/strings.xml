@@ -13,16 +13,22 @@
     <string name="threads_label">推理线程</string>
     <string name="threads_hint">1～32</string>
     <string name="threads_default">4</string>
-    <string name="profiling_enabled">详细性能分析（单独运行；逐算子计时与 CPU 采样会增加耗时）</string>
+    <string name="backend_label">计算后端</string>
+    <string-array name="backend_options">
+        <item>CPU I8MM</item>
+        <item>Vulkan GPU</item>
+    </string-array>
+    <string name="profiling_enabled">详细性能分析（单独运行；逐算子、GPU 时间戳与 CPU 采样会增加耗时）</string>
     <string name="input_label">要合成的文字</string>
     <string name="default_text">你好，这是 audio.cpp 在安卓模拟器上的离线语音合成测试。</string>
     <string name="reference_title">语音克隆（可选）</string>
-    <string name="reference_help">选择 WAV 参考音频以模仿其音色。音频文字稿可在下方 reference_text 参数中填写。</string>
+    <string name="reference_help">选择要模仿音色的 WAV 录音。</string>
     <string name="select_reference">选择参考音频</string>
     <string name="clear_reference">移除参考音频</string>
     <string name="reference_empty">未选择参考音频，将使用普通 TTS</string>
     <string name="reference_selected">已选择：%1$s\n下次合成将使用语音克隆</string>
     <string name="reference_copying">正在复制参考音频…</string>
+    <string name="reference_ready">参考音频已就绪</string>
     <string name="asr_input_title">输入音频</string>
     <string name="asr_input_help">选择 PCM WAV 文件，单声道或双声道均可；非 16 kHz 音频会自动重采样。识别结果可包含时间戳和说话人标签，具体取决于模型。</string>
     <string name="select_asr_audio">选择要识别的 WAV</string>

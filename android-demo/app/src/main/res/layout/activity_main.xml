@@ -157,6 +157,32 @@
                 android:textSize="16sp" />
         </LinearLayout>
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:labelFor="@+id/backendSpinner"
+                android:text="@string/backend_label"
+                android:textColor="@color/primary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <Spinner
+                android:id="@+id/backendSpinner"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="16dp"
+                android:layout_weight="1"
+                android:contentDescription="@string/backend_label"
+                android:entries="@array/backend_options" />
+        </LinearLayout>
+
         <CheckBox
             android:id="@+id/profilingEnabled"
             android:layout_width="match_parent"
@@ -300,6 +326,13 @@
                 android:textAllCaps="false"
                 android:textColor="@color/accent"
                 android:textSize="15sp" />
+
+            <LinearLayout
+                android:id="@+id/referenceParametersContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone" />
         </LinearLayout>
 
         <TextView

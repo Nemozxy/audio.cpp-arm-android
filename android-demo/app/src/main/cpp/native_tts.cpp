@@ -317,12 +317,16 @@ void ensure_model(const char * model_path, const std::vector<OptionInput> & inpu
 }
 
 void ensure_session(const char * model_path, const char * task, int threads,
-                    const std::vector<OptionInput> & inputs) {
+                    const char * backend_name, const std::vector<OptionInput> & inputs) {
     ensure_model(model_path, inputs);
     if (audiocpp_model_supports(g_model, task, "offline") != 1) {
         throw std::runtime_error(std::string("当前模型不支持离线任务：") + task);
     }
-    const std::string signature = std::string(task) + ";" +
+    if (backend_name == nullptr ||
+        (std::string(backend_name) != "cpu" && std::string(backend_name) != "vulkan")) {
+        throw std::runtime_error("Demo 仅支持显式选择 cpu 或 vulkan 后端");
+    }
+    const std::string signature = std::string(task) + ";" + backend_name + ";" +
         option_signature(inputs, AUDIOCPP_OPTION_SCOPE_SESSION, threads);
     if (g_session != nullptr && g_session_signature == signature) {
         return;
@@ -332,14 +336,15 @@ void ensure_session(const char * model_path, const char * task, int threads,
     clear_session();
     OptionsGuard session_options;
     apply_options(session_options.value, inputs, AUDIOCPP_OPTION_SCOPE_SESSION);
-    audiocpp_backend_config backend = {"cpu", 0, std::max(1, threads)};
+    audiocpp_backend_config backend = {backend_name, 0, std::max(1, threads)};
     check(audiocpp_session_create(g_model, task, "offline", &backend,
                                   session_options.value, &g_session),
-          "创建 CPU 语音会话");
+          "创建语音会话");
     const double elapsed = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - started).count();
     native_log(ANDROID_LOG_INFO, "AudioCppNative",
-                        "Session created: %s/offline, %.3f ms, threads=%d", task, elapsed, threads);
+               "Session created: %s/offline, backend=%s device=0 %.3f ms, threads=%d",
+               task, backend_name, elapsed, threads);
     g_session_signature = signature;
 }
 
@@ -637,7 +642,17 @@ Java_com_audiocpp_ttsdemo_NativeTts_nativeVersion(JNIEnv * env, jclass) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_audiocpp_ttsdemo_NativeTts_setProfiling(JNIEnv *, jclass, jboolean enabled) {
-    audiocpp_cpu_profile_set_enabled(enabled == JNI_TRUE ? 1 : 0);
+    const bool profiling = enabled == JNI_TRUE;
+    audiocpp_cpu_profile_set_enabled(profiling ? 1 : 0);
+    // ggml reads these once when the Vulkan instance is initialized. GPU
+    // timestamp diagnostics go to logcat and are never enabled for plain runs.
+    if (profiling) {
+        setenv("GGML_VK_PERF_LOGGER", "1", 1);
+        setenv("GGML_VK_SYNC_LOGGER", "1", 1);
+    } else {
+        unsetenv("GGML_VK_PERF_LOGGER");
+        unsetenv("GGML_VK_SYNC_LOGGER");
+    }
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -669,12 +684,13 @@ Java_com_audiocpp_ttsdemo_NativeTts_inspectModel(JNIEnv * env, jclass, jstring m
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
     JNIEnv * env, jclass, jstring model_path, jstring text, jstring output_path,
-    jstring reference_audio_path, jint threads,
+    jstring reference_audio_path, jint threads, jstring backend_name,
     jintArray scopes, jobjectArray keys, jobjectArray values) {
     UtfChars model(env, model_path);
     UtfChars transcript(env, text);
     UtfChars output(env, output_path);
     UtfChars reference_audio(env, reference_audio_path);
+    UtfChars backend(env, backend_name);
     if (model.value == nullptr || transcript.value == nullptr || output.value == nullptr) {
         return java_string(env, "JNI 参数为空或内存不足");
     }
@@ -694,7 +710,7 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
             (audiocpp_model_supports(g_model, "tts", "offline") == 1 ? "tts" : "clon");
         native_log(ANDROID_LOG_INFO, "AudioCppNative", "Resolved task: %s/offline", task);
         const auto session_started = std::chrono::steady_clock::now();
-        ensure_session(model.value, task, threads, inputs);
+        ensure_session(model.value, task, threads, backend.value, inputs);
         const double session_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - session_started).count();
 
@@ -760,9 +776,10 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
     JNIEnv * env, jclass, jstring model_path, jstring input_audio_path, jint threads,
-    jintArray scopes, jobjectArray keys, jobjectArray values) {
+    jstring backend_name, jintArray scopes, jobjectArray keys, jobjectArray values) {
     UtfChars model(env, model_path);
     UtfChars input_audio(env, input_audio_path);
+    UtfChars backend(env, backend_name);
     if (model.value == nullptr || input_audio.value == nullptr) {
         throw_java(env, "JNI 参数为空或内存不足");
         return nullptr;
@@ -791,7 +808,7 @@ Java_com_audiocpp_ttsdemo_NativeTts_transcribe(
 
         stage_started = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(g_mutex);
-        ensure_session(model.value, "asr", threads, inputs);
+        ensure_session(model.value, "asr", threads, backend.value, inputs);
         const double session_ms = elapsed_ms(stage_started);
         stage_started = std::chrono::steady_clock::now();
         RequestGuard request;

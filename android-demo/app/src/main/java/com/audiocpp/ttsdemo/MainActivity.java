@@ -23,7 +23,6 @@ import android.widget.ProgressBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -68,15 +67,18 @@ public final class MainActivity extends Activity {
         final String modelFamily;
         final String modelName;
         final String threads;
+        final String backend;
         final boolean profiling;
         String status = "";
         String transcript = "";
 
-        RunMetadata(String task, String modelFamily, String modelName, String threads, boolean profiling) {
+        RunMetadata(String task, String modelFamily, String modelName, String threads,
+                    String backend, boolean profiling) {
             this.task = task;
             this.modelFamily = modelFamily;
             this.modelName = modelName;
             this.threads = threads;
+            this.backend = backend;
             this.profiling = profiling;
         }
     }
@@ -160,7 +162,8 @@ public final class MainActivity extends Activity {
         ttsInputSection = findViewById(R.id.ttsInputSection);
         asrInputSection = findViewById(R.id.asrInputSection);
         taskSpinner = findViewById(R.id.taskSpinner);
-        parameterPanel = new ParameterPanel(this, findViewById(R.id.parametersContainer));
+        parameterPanel = new ParameterPanel(this, findViewById(R.id.parametersContainer),
+                findViewById(R.id.referenceParametersContainer));
 
         ttsModelFile = new File(getFilesDir(), TTS_MODEL_ASSET);
         asrModelFile = new File(getFilesDir(), ASR_MODEL_ASSET);
@@ -226,7 +229,7 @@ public final class MainActivity extends Activity {
         supportsClon = false;
         speakerReferenceSupported = false;
         tasks.clear();
-        parameterPanel.setOptions(new JSONArray());
+        parameterPanel.clear();
         transcriptTitle.setVisibility(View.GONE);
         transcriptText.setVisibility(View.GONE);
         modelName.setText(target.getName());
@@ -246,6 +249,7 @@ public final class MainActivity extends Activity {
                 postToUi(() -> modelStatus.setText(R.string.detecting_model));
                 JSONObject inspection = new JSONObject(NativeTts.inspectModel(target.getAbsolutePath()));
                 String family = inspection.getString("family");
+                List<ModelOption> options = ModelOption.readOptions(inspection.getJSONArray("options"));
                 postToUi(() -> {
                     if (modelFile == null || !modelFile.equals(target)) {
                         return;
@@ -266,7 +270,7 @@ public final class MainActivity extends Activity {
                             android.R.layout.simple_spinner_item, tasks);
                     adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
                     taskSpinner.setAdapter(adapter);
-                    parameterPanel.setOptions(inspection.optJSONArray("options"));
+                    parameterPanel.setOptions(family, options);
                     modelReady = true;
                     setBusy(false);
                     updateTaskUi();
@@ -330,7 +334,7 @@ public final class MainActivity extends Activity {
             return;
         }
         pendingPerformanceReport = PerformanceReport.build(this, nativeVersion, run.modelFamily,
-                run.modelName, run.task, run.threads, run.profiling, run.status, run.transcript);
+                run.modelName, run.task, run.threads, run.backend, run.profiling, run.status, run.transcript);
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/plain");
@@ -387,10 +391,11 @@ public final class MainActivity extends Activity {
             try {
                 copyUri(source, destination, false);
                 postToUi(() -> {
+                    if (reference) parameterPanel.resetReference();
                     setBusy(false);
                     updateAudioStatuses();
                     statusText.setText(reference
-                            ? "参考音频已就绪，可填写 reference_text 后开始克隆"
+                            ? getString(R.string.reference_ready)
                             : "识别音频已就绪，可以开始识别");
                 });
             } catch (Exception error) {
@@ -477,6 +482,7 @@ public final class MainActivity extends Activity {
             return;
         }
         referenceName = referenceFile.getName();
+        parameterPanel.resetReference();
         updateAudioStatuses();
         updateControls();
         statusText.setText(R.string.reference_empty);
@@ -539,6 +545,11 @@ public final class MainActivity extends Activity {
         return "tts";
     }
 
+    private String currentBackend() {
+        Spinner spinner = findViewById(R.id.backendSpinner);
+        return spinner.getSelectedItemPosition() == 1 ? "vulkan" : "cpu";
+    }
+
     private void updateTaskUi() {
         boolean tts = "tts".equals(currentTask());
         ttsInputSection.setVisibility(tts ? View.VISIBLE : View.GONE);
@@ -565,8 +576,11 @@ public final class MainActivity extends Activity {
         synthesizeButton.setText(tts ? R.string.synthesize : R.string.transcribe);
         synthesizeButton.setEnabled(modelReady && !busy);
         resetOptionsButton.setEnabled(modelReady && !busy);
+        parameterPanel.setEnabled(modelReady && !busy);
+        parameterPanel.setReferenceAvailable(modelReady && tts && speakerReferenceSupported && referenceFile.isFile());
         threadsInput.setEnabled(modelReady && !busy);
         profilingEnabled.setEnabled(!busy);
+        findViewById(R.id.backendSpinner).setEnabled(!busy);
         taskSpinner.setEnabled(modelReady && !busy && tasks.size() > 1);
         selectReferenceButton.setEnabled(modelReady && !busy && tts && speakerReferenceSupported);
         clearReferenceButton.setEnabled(modelReady && !busy && tts && referenceFile.isFile());
@@ -630,7 +644,7 @@ public final class MainActivity extends Activity {
         String referencePath = speakerReferenceSupported && referenceFile.isFile()
                 ? referenceFile.getAbsolutePath() : null;
         RunMetadata run = new RunMetadata("tts", modelFamily, new File(selectedModel).getName(),
-                Integer.toString(threads), profilingEnabled.isChecked());
+                Integer.toString(threads), currentBackend(), profilingEnabled.isChecked());
         lastRun = run;
         hasPerformanceReport = true;
         setBusy(true);
@@ -641,7 +655,7 @@ public final class MainActivity extends Activity {
             String error;
             try {
                 error = NativeTts.synthesize(selectedModel, text, wavFile.getAbsolutePath(),
-                        referencePath, threads, options.scopes, options.keys, options.values);
+                        referencePath, threads, run.backend, options.scopes, options.keys, options.values);
             } catch (Throwable failure) {
                 Log.e(TAG, "Synthesis failed", failure);
                 error = readableMessage(failure);
@@ -681,7 +695,7 @@ public final class MainActivity extends Activity {
         String selectedModel = modelFile.getAbsolutePath();
         String inputPath = asrAudioFile.getAbsolutePath();
         RunMetadata run = new RunMetadata("asr", modelFamily, new File(selectedModel).getName(),
-                Integer.toString(threads), profilingEnabled.isChecked());
+                Integer.toString(threads), currentBackend(), profilingEnabled.isChecked());
         lastRun = run;
         hasPerformanceReport = true;
         setBusy(true);
@@ -695,7 +709,7 @@ public final class MainActivity extends Activity {
             String error = null;
             try {
                 JSONObject result = new JSONObject(NativeTts.transcribe(selectedModel, inputPath, threads,
-                        options.scopes, options.keys, options.values));
+                        run.backend, options.scopes, options.keys, options.values));
                 transcript = result.optString("text");
                 language = result.optString("language");
             } catch (Throwable failure) {

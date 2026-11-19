@@ -23,10 +23,10 @@ final class NativeTts {
 
     /** Returns null on success, otherwise a human-readable error. */
     static native String synthesize(String modelPath, String text, String outputPath,
-                                    String referenceAudioPath, int threads,
+                                    String referenceAudioPath, int threads, String backend,
                                     int[] scopes, String[] keys, String[] values);
 
     /** Returns a JSON object containing text and language; throws on failure. */
-    static native String transcribe(String modelPath, String inputAudioPath, int threads,
+    static native String transcribe(String modelPath, String inputAudioPath, int threads, String backend,
                                     int[] scopes, String[] keys, String[] values);
 }

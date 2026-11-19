@@ -16,7 +16,8 @@ final class PerformanceReport {
     }
 
     static String build(Context context, String nativeVersion, String modelFamily, String modelName,
-                        String task, String threads, boolean profiling, String status, String transcript) {
+                        String task, String threads, String backend, boolean profiling,
+                        String status, String transcript) {
         String appVersion = "";
         try {
             appVersion = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
@@ -25,7 +26,7 @@ final class PerformanceReport {
         }
         StringBuilder report = new StringBuilder(16384);
         report.append("audio.cpp Android performance report\n");
-        report.append("schema=2\n");
+        report.append("schema=3\n");
         report.append("created_at=").append(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.US)
                 .format(new Date())).append('\n');
         report.append("app.version=").append(value(appVersion)).append('\n');
@@ -49,6 +50,7 @@ final class PerformanceReport {
         report.append("model.file=").append(value(modelName)).append('\n');
         report.append("run.task=").append(value(task)).append('\n');
         report.append("run.threads=").append(value(threads)).append('\n');
+        report.append("run.backend=").append(value(backend)).append('\n');
         report.append("run.profiling=").append(profiling).append('\n');
         report.append("run.timing_scope=audio_read_convert_session_request_inference_excludes_model_load\n");
         report.append("run.status=").append(value(status)).append("\n\n");

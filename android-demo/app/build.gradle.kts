@@ -8,7 +8,7 @@ android {
 
     defaultConfig {
         applicationId = "com.audiocpp.ttsdemo"
-        minSdk = 24
+        minSdk = (project.findProperty("audiocppMinSdk") as String?)?.toInt() ?: 24
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
