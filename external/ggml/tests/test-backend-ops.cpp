@@ -2251,6 +2251,29 @@ struct test_get_rows : public test_case {
     }
 };
 
+// A 1024-wide BF16 table crosses a 128 MiB descriptor range at row 65536.
+struct test_get_rows_large_vocab : public test_get_rows {
+    test_get_rows_large_vocab() : test_get_rows(GGML_TYPE_BF16, 1024, 65537, 5) {}
+
+    void initialize_tensors(ggml_context * ctx) override {
+        const std::array<int32_t, 5> indices {65536, 0, 65535, 65536, 1};
+        ggml_tensor * in = ggml_get_tensor(ctx, "in");
+        ggml_tensor * rows = ggml_get_tensor(ctx, "rows");
+        ggml_tensor * out = ggml_get_tensor(ctx, "out");
+        ggml_backend_tensor_set(rows, indices.data(), 0, sizeof(indices));
+        ggml_backend_tensor_memset(out, 0, 0, ggml_nbytes(out));
+        std::vector<float> values(n);
+        std::vector<ggml_bf16_t> packed(n);
+        for (int32_t row : indices) {
+            for (int i = 0; i < n; ++i) {
+                values[i] = float(1 + row % 13) + float(i % 8) / 8.0f;
+            }
+            ggml_fp32_to_bf16_row(values.data(), packed.data(), n);
+            ggml_backend_tensor_set(in, packed.data(), row * in->nb[1], in->nb[1]);
+        }
+    }
+};
+
 // GGML_OP_GET_ROWS_BACK
 struct test_get_rows_back : public test_case {
     const ggml_type type;
@@ -7746,6 +7769,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     test_cases.emplace_back(new test_get_rows(GGML_TYPE_F32, 1, 8, 2, 1, 1, false));
+    test_cases.emplace_back(new test_get_rows_large_vocab());
     for (ggml_type type : all_types) {
         for (int b : {1, 7}) {
             for (bool v : {false, true}) {

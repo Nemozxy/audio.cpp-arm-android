@@ -124,9 +124,10 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const uint iqs = idx & 0x07;
 
             const float d = float(data_a_packed16[ib].d);
-            const i8vec2 v0 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs])).xy; // vec4 used due to #12147
-            const i8vec2 v1 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs + 1])).xy;
-            const vec4 v = vec4(v0.x, v0.y, v1.x, v1.y) * d;
+            const int v0 = int(data_a_packed16[ib].qs[2*iqs]);
+            const int v1 = int(data_a_packed16[ib].qs[2*iqs + 1]);
+            const vec4 v = vec4(bitfieldExtract(v0, 0, 8), bitfieldExtract(v0, 8, 8),
+                                bitfieldExtract(v1, 0, 8), bitfieldExtract(v1, 8, 8)) * d;
 
             buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
             buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
@@ -213,13 +214,14 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const uint mbidxshift0 = (is < 4) ? scalesoffs : scalesoffs + 4;
             const uint mbidxshift1 = (is < 4) ? scalesoffs : scalesoffs + 2;
 
-            const uint8_t sc    = uint8_t(((scales[scidx0] >> scidxshift0) & 0xF) | ((scales[0] >> scidxshift1) & 0x30));
-            const uint8_t mbyte = uint8_t(((scales[mbidx0] >> mbidxshift0) & 0xF) | ((scales[1] >> mbidxshift1) & 0x30));
+            const uint sc    = ((scales[scidx0] >> scidxshift0) & 0xF) | ((scales[0] >> scidxshift1) & 0x30);
+            const uint mbyte = ((scales[mbidx0] >> mbidxshift0) & 0xF) | ((scales[1] >> mbidxshift1) & 0x30);
 
             const float d = loadd.x * sc;
             const float m = -loadd.y * mbyte;
 
-            const vec4 q = vec4(unpack8((data_a_packed32[ib].qs[qsi / 4] >> (b * 4)) & 0x0F0F0F0F));
+            const uint packed = data_a_packed32[ib].qs[qsi / 4] >> (b * 4);
+            const vec4 q = vec4((uvec4(packed) >> uvec4(0, 8, 16, 24)) & 0x0fu);
 
             buf_a[buf_idx    ] = FLOAT_TYPEV2(fma(d, q.x, m), fma(d, q.y, m));
             buf_a[buf_idx + 1] = FLOAT_TYPEV2(fma(d, q.z, m), fma(d, q.w, m));

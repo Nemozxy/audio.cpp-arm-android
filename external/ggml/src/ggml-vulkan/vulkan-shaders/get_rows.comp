@@ -20,21 +20,18 @@ void main() {
             const uint i11 = gid_z / p.ne12;
             const uint i12 = gid_z % p.ne12;
 
-            const uint i01 = data_b[get_boffset() + i10*p.nb10 + i11*p.nb11 + i12*p.nb12];
-
-            const uint a_offset = get_aoffset() + i01*p.nb01 + i11*p.nb02 + i12*p.nb03;
-            const uint d_offset = get_doffset() + i10*p.nb21 + i11*p.nb22 + i12*p.nb23;
+            const uint i01 = data_b[get_boffset() + i10*p.nb10 + i11*p.nb11 + i12*p.nb12] - uint(p.param3);
+            if (i01 < p.ne01) {
+                const uint a_offset = get_aoffset() + i01*p.nb01 + i11*p.nb02 + i12*p.nb03;
+                const uint d_offset = get_doffset() + i10*p.nb21 + i11*p.nb22 + i12*p.nb23;
 
 #if defined(DATA_A_BF16)
-            TEMP_TYPE v = TEMP_TYPE(bf16_to_fp32(data_a[a_offset + i00]));
+                TEMP_TYPE v = TEMP_TYPE(bf16_to_fp32(data_a[a_offset + i00]));
 #else
-            TEMP_TYPE v = TEMP_TYPE(data_a[a_offset + i00]);
+                TEMP_TYPE v = TEMP_TYPE(data_a[a_offset + i00]);
 #endif
-#ifndef OPTIMIZATION_ERROR_WORKAROUND
-            data_d[d_offset + i00] = D_TYPE(v);
-#else
-            data_d[d_offset + i00] = D_TYPE(v);
-#endif
+                data_d[d_offset + i00] = D_TYPE(v);
+            }
             gid_y += gl_WorkGroupSize.y * gl_NumWorkGroups.y;
         }
         gid_z += gl_WorkGroupSize.z * gl_NumWorkGroups.z;

@@ -81,9 +81,10 @@ vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     return vec2(int(data_a[a_offset + ib].qs[iqs]), int(data_a[a_offset + ib].qs[iqs + 1]));
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
-    const i8vec2 v0 = unpack8(int32_t(data_a_packed16[a_offset + ib].qs[iqs/2])).xy; // vec4 used due to #12147
-    const i8vec2 v1 = unpack8(int32_t(data_a_packed16[a_offset + ib].qs[iqs/2 + 1])).xy;
-    return vec4(v0.x, v0.y, v1.x, v1.y);
+    const int v0 = int(data_a_packed16[a_offset + ib].qs[iqs/2]);
+    const int v1 = int(data_a_packed16[a_offset + ib].qs[iqs/2 + 1]);
+    return vec4(bitfieldExtract(v0, 0, 8), bitfieldExtract(v0, 8, 8),
+                bitfieldExtract(v1, 0, 8), bitfieldExtract(v1, 8, 8));
 }
 #endif
 

@@ -46,6 +46,7 @@ DispatchLoaderDynamic & ggml_vk_default_dispatcher();
 #include <utility>
 #include <memory>
 #include <limits>
+#include <numeric>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -109,6 +110,17 @@ static bool is_pow2(uint32_t x) { return x > 1 && (x & (x-1)) == 0; }
 #define VK_VENDOR_ID_INTEL 0x8086
 #define VK_VENDOR_ID_NVIDIA 0x10de
 #define VK_VENDOR_ID_QUALCOMM 0x5143
+
+static bool ggml_vk_adreno_750_compat(const vk::PhysicalDeviceProperties & props, vk::DriverId driver_id) {
+#if defined(__ANDROID__)
+    return driver_id == vk::DriverId::eQualcommProprietary &&
+           strcmp(props.deviceName.data(), "Adreno (TM) 750") == 0;
+#else
+    GGML_UNUSED(props);
+    GGML_UNUSED(driver_id);
+    return false;
+#endif
+}
 
 #define VK_DEVICE_DESCRIPTOR_POOL_SIZE 256
 
@@ -5293,6 +5305,11 @@ static vk_device ggml_vk_get_device(size_t idx) {
         device->properties = props2.properties;
         device->vendor_id = device->properties.vendorID;
         device->driver_id = driver_props.driverID;
+        const bool adreno_750_compat = ggml_vk_adreno_750_compat(device->properties, device->driver_id);
+        if (adreno_750_compat) {
+            // Mapped UMA memory avoids the driver's transfer-path failure on large KV caches.
+            device->prefer_host_memory = true;
+        }
 
         if (device->driver_id == vk::DriverId::eMoltenvk) {
             // Disable external_memory_host until https://github.com/KhronosGroup/MoltenVK/pull/2622
@@ -5377,7 +5394,8 @@ static vk_device ggml_vk_get_device(size_t idx) {
 
         const bool force_disable_f16 = getenv("GGML_VK_DISABLE_F16") != nullptr;
 
-        device->fp16 = !force_disable_f16 && fp16_storage && fp16_compute;
+        // Keep FP16 storage, but avoid the FP16 compute variants that stall on this driver.
+        device->fp16 = !adreno_750_compat && !force_disable_f16 && fp16_storage && fp16_compute;
 
         if (!ggml_vk_khr_cooperative_matrix_support(device->properties, driver_props, device->architecture)) {
             device->coopmat_support = false;
@@ -5987,6 +6005,7 @@ static void ggml_vk_print_gpu_info(size_t idx) {
     }
 
     physical_device.getProperties2(&props2);
+    fp16 = fp16 && !ggml_vk_adreno_750_compat(props2.properties, driver_props.driverID);
 
     VkPhysicalDeviceFeatures2 device_features2;
     device_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -8614,6 +8633,12 @@ static void ggml_vk_mul_mat_vec_nc_f16_f32(ggml_backend_vk_context * ctx, vk_con
         }, pc, { (uint32_t)ne03, (uint32_t)ne01, (uint32_t)ne12 });
 }
 
+static bool ggml_vk_use_q4_k_matmul(const vk_device & device, const ggml_tensor * mul) {
+    // The Q4_K matvec pipeline fails to compile on this driver.
+    return mul->src[0]->type == GGML_TYPE_Q4_K &&
+           ggml_vk_adreno_750_compat(device->properties, device->driver_id);
+}
+
 static void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
     ggml_tensor * dst = cgraph->nodes[node_idx];
     ggml_tensor * src0 = dst->src[0];
@@ -8668,7 +8693,8 @@ static void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, c
         ggml_vk_mul_mat_vec_nc_f16_f32(ctx, subctx, cgraph, node_idx);
     // mul_mat_vec supports batching ne12*ne13 when ne11==1, or treating ne11 as the batch size (up to four)
     // when ne12 and ne13 are one.
-    } else if ((dst->ne[1] == 1 || (dst->ne[1] <= mul_mat_vec_max_cols && src1->ne[2] * src1->ne[3] == 1)) &&
+    } else if (!ggml_vk_use_q4_k_matmul(ctx->device, dst) &&
+               (dst->ne[1] == 1 || (dst->ne[1] <= mul_mat_vec_max_cols && src1->ne[2] * src1->ne[3] == 1)) &&
                (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16 || ggml_is_quantized(src0->type))) {
         ggml_vk_mul_mat_vec_q_f16(ctx, subctx, cgraph, node_idx);
     } else {
@@ -10697,19 +10723,49 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
     }
 }
 
+static size_t ggml_vk_get_rows_chunk_size(const vk_device & device, const ggml_tensor * src0) {
+    const size_t alignment = device->properties.limits.minStorageBufferOffsetAlignment;
+    if (!ggml_is_matrix(src0) || !ggml_is_contiguous(src0) || src0->view_offs % alignment != 0 ||
+        src0->ne[1] > std::numeric_limits<int32_t>::max() || src0->nb[1] == 0) {
+        return 0;
+    }
+    const size_t row_multiple = alignment / std::gcd(alignment, src0->nb[1]);
+    const size_t max_rows = device->properties.limits.maxStorageBufferRange / src0->nb[1];
+    return max_rows / row_multiple * row_multiple;
+}
+
 static void ggml_vk_get_rows(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     const uint32_t src0_type_size = ggml_type_size(src0->type);
     const uint32_t src1_type_size = ggml_type_size(src1->type);
     const uint32_t dst_type_size = ggml_type_size(dst->type);
 
-    ggml_vk_op_f32<vk_op_binary_push_constants>(ctx, subctx, src0, src1, nullptr, nullptr, dst, GGML_OP_GET_ROWS, {
+    vk_op_binary_push_constants pc {
         (uint32_t)ggml_nelements(src0),
         (uint32_t)src0->ne[0], (uint32_t)src0->ne[1], (uint32_t)src0->ne[2],(uint32_t)src0->ne[3], (uint32_t)src0->nb[0] / src0_type_size, (uint32_t)src0->nb[1] / src0_type_size, (uint32_t)src0->nb[2] / src0_type_size, (uint32_t)src0->nb[3] / src0_type_size,
         (uint32_t)src1->ne[0], (uint32_t)src1->ne[1], (uint32_t)src1->ne[2],(uint32_t)src1->ne[3], (uint32_t)src1->nb[0] / src1_type_size, (uint32_t)src1->nb[1] / src1_type_size, (uint32_t)src1->nb[2] / src1_type_size, (uint32_t)src1->nb[3] / src1_type_size,
         (uint32_t) dst->ne[0], (uint32_t) dst->ne[1], (uint32_t) dst->ne[2],(uint32_t) dst->ne[3], (uint32_t) dst->nb[0] /  dst_type_size, (uint32_t) dst->nb[1] /  dst_type_size, (uint32_t) dst->nb[2] /  dst_type_size, (uint32_t) dst->nb[3] /  dst_type_size,
         0,
         0.0f, 0.0f, 0,
-    });
+    };
+    if (ggml_nbytes(src0) <= ctx->device->properties.limits.maxStorageBufferRange) {
+        ggml_vk_op_f32(ctx, subctx, src0, src1, nullptr, nullptr, dst, GGML_OP_GET_ROWS, pc);
+        return;
+    }
+
+    // Each dispatch writes only the output rows whose indices refer to its descriptor.
+    const size_t chunk_rows = ggml_vk_get_rows_chunk_size(ctx->device, src0);
+    GGML_ASSERT(chunk_rows > 0 && get_misalign_bytes(ctx, src0) == 0);
+    ggml_tensor chunk = *src0;
+    chunk.view_src = src0->view_src ? src0->view_src : const_cast<ggml_tensor *>(src0);
+    for (size_t row = 0; row < static_cast<size_t>(src0->ne[1]); row += chunk_rows) {
+        const size_t byte_offset = row * src0->nb[1];
+        chunk.view_offs = src0->view_offs + byte_offset;
+        chunk.data = static_cast<uint8_t *>(src0->data) + byte_offset;
+        chunk.ne[1] = std::min(chunk_rows, static_cast<size_t>(src0->ne[1]) - row);
+        pc.ne01 = static_cast<uint32_t>(chunk.ne[1]);
+        pc.param3 = static_cast<int32_t>(row);
+        ggml_vk_op_f32(ctx, subctx, &chunk, src1, nullptr, nullptr, dst, GGML_OP_GET_ROWS, pc);
+    }
 }
 
 static void ggml_vk_acc(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
@@ -14745,7 +14801,7 @@ static bool ggml_vk_can_fuse(const ggml_backend_vk_context * ctx, const struct g
         const ggml_tensor *mul = cgraph->nodes[node_idx];
         const ggml_tensor *add = cgraph->nodes[node_idx + 1];
 
-        if (!mm_add_ok(mul, add)) {
+        if (ggml_vk_use_q4_k_matmul(ctx->device, mul) || !mm_add_ok(mul, add)) {
             return false;
         }
         if (ops.size() == 3) {
@@ -15253,7 +15309,8 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     // Estimate the amount of matmul work by looking at the weight matrix size, and submit every 100MB
     // (and scaled down based on model size, so smaller models submit earlier).
     // Also submit at least every 100 nodes, in case there are workloads without as much matmul.
-    int nodes_per_submit = 100;
+    // Keep individual submissions short on Adreno's Android app queues.
+    const int nodes_per_submit = ggml_vk_adreno_750_compat(ctx->device->properties, ctx->device->driver_id) ? 16 : 100;
     int submitted_nodes = 0;
     int submit_count = 0;
     uint64_t mul_mat_bytes = 0;
@@ -16062,6 +16119,11 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
     ggml_backend_vk_device_context * ctx = (ggml_backend_vk_device_context *)dev->context;
     const vk_device& device = ggml_vk_get_device(ctx->device);
 
+    // Leaf tensors are allocated but do not bind a storage buffer descriptor.
+    if (op->op == GGML_OP_NONE) {
+        return ggml_nbytes(op) <= device->max_buffer_size;
+    }
+
     const bool uses_bda = (op->op == GGML_OP_IM2COL || op->op == GGML_OP_IM2COL_FAST_1D || op->op == GGML_OP_IM2COL_3D) &&
                           device->shader_int64 && device->buffer_device_address;
 
@@ -16080,6 +16142,11 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
     };
     // reject any tensors larger than the max buffer size
     for (int i = 0; i < GGML_MAX_SRC; i++) {
+        if (i == 0 && op->op == GGML_OP_GET_ROWS && op->src[0] &&
+            ggml_nbytes(op->src[0]) <= device->max_buffer_size &&
+            ggml_vk_get_rows_chunk_size(device, op->src[0]) != 0) {
+            continue;
+        }
         if (op->src[i] && !tensor_size_supported(ggml_nbytes(op->src[i]))) {
             return false;
         }
@@ -16371,7 +16438,6 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
         case GGML_OP_ROPE:
             return ggml_is_contiguous_rows(op) && ggml_is_contiguous_rows(op->src[0]);
         case GGML_OP_ROPE_BACK:
-        case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
         case GGML_OP_VIEW:
         case GGML_OP_PERMUTE:
