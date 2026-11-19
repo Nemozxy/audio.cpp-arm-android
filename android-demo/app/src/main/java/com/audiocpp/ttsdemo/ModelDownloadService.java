@@ -61,6 +61,8 @@ public final class ModelDownloadService extends Service {
 
     static State current() { return state; }
 
+    static boolean canPause() { return pending != null && ModelRepository.canResume(pending.entry); }
+
     static void observe(Runnable observer) {
         listener = observer;
         observer.run();
@@ -89,7 +91,9 @@ public final class ModelDownloadService extends Service {
             throw error;
         }
         context.getSystemService(NotificationManager.class).cancel(RESULT_NOTIFICATION);
-        publish(new State(entry.name(), 0, entry.bytes(), true, false, null, null));
+        File path = new ModelLibrary(context.getFilesDir()).downloadPath(source, entry);
+        publish(new State(entry.name(), ModelRepository.resumableBytes(entry, path), entry.bytes(),
+                true, false, null, null));
     }
 
     static void requestCancel(Context context) {
@@ -152,7 +156,9 @@ public final class ModelDownloadService extends Service {
         } catch (Exception error) {
             if (destination != null) destination.getParentFile().delete();
             String message = job.cancelled.get() || error instanceof CancellationException
-                    ? getString(R.string.model_cancelled) : failureMessage(error);
+                    ? getString(ModelRepository.canResume(job.entry)
+                            ? R.string.model_download_paused : R.string.model_cancelled)
+                    : failureMessage(error);
             main.post(() -> finish(job, null, message));
         }
     }
@@ -205,16 +211,18 @@ public final class ModelDownloadService extends Service {
 
     private Notification progressNotification(Job job) {
         boolean cancelling = job.cancelled.get();
+        boolean canPause = ModelRepository.canResume(job.entry);
         Notification.Builder builder = notification().setOngoing(true)
                 .setContentTitle(state.name())
-                .setContentText(cancelling ? getString(R.string.model_cancelling)
+                .setContentText(cancelling ? getString(canPause ? R.string.model_download_pausing : R.string.model_cancelling)
                         : getString(R.string.model_download_notification_progress,
                                 Formatter.formatFileSize(this, state.copied()), Formatter.formatFileSize(this, state.total())))
                 .setProgress(1000, state.progress(), state.copied() == 0);
         if (!cancelling) {
             Intent cancel = new Intent(this, ModelDownloadService.class).setAction(CANCEL).putExtra(JOB_ID, job.id);
             PendingIntent action = PendingIntent.getService(this, job.id, cancel, PendingIntent.FLAG_IMMUTABLE);
-            builder.addAction(new Notification.Action.Builder(null, getString(android.R.string.cancel), action).build());
+            builder.addAction(new Notification.Action.Builder(null,
+                    getString(canPause ? R.string.model_download_pause : android.R.string.cancel), action).build());
         }
         return builder.build();
     }

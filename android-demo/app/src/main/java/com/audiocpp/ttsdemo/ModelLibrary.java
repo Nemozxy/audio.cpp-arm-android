@@ -13,6 +13,7 @@ import java.util.UUID;
 final class ModelLibrary {
     static final String PREFERENCES = "MainActivity";
     static final String SELECTED_PATH = "model-path";
+    private static final String DOWNLOAD_PARTIAL = "download-v1.part";
 
     private final File root;
 
@@ -51,12 +52,13 @@ final class ModelLibrary {
         return parent.getParentFile().equals(root) ? parent.getName() : parent.getParentFile().getName();
     }
 
-    void discardInterruptedTransfers() {
+    void discardAbandonedTransfers() {
         for (String area : new String[]{"custom-models", "downloaded-models"}) {
             File[] directories = new File(root, area).listFiles(File::isDirectory);
             if (directories == null) continue;
             for (File dir : directories) {
-                File[] partials = dir.listFiles(file -> file.getName().endsWith(".part"));
+                File[] partials = dir.listFiles(file -> file.getName().endsWith(".part")
+                        && !(area.equals("downloaded-models") && file.getName().equals(DOWNLOAD_PARTIAL)));
                 if (partials != null) {
                     for (File partial : partials) partial.delete();
                 }
@@ -72,16 +74,30 @@ final class ModelLibrary {
         return new File(directory("custom-models", UUID.randomUUID().toString()), name);
     }
 
-    File downloadTarget(ModelRepository.Source source, ModelRepository.Entry entry) throws IOException {
+    File downloadPath(ModelRepository.Source source, ModelRepository.Entry entry) {
         String id = entry.sha256().isEmpty() ? source.name() + ":" + entry.path() : entry.sha256();
         String key = UUID.nameUUIDFromBytes(id.getBytes(StandardCharsets.UTF_8)).toString();
-        return new File(directory("downloaded-models", key), entry.name());
+        return new File(new File(new File(root, "downloaded-models"), key), entry.name());
+    }
+
+    File downloadTarget(ModelRepository.Source source, ModelRepository.Entry entry) throws IOException {
+        File target = downloadPath(source, entry);
+        ensureDirectory(target.getParentFile());
+        return target;
+    }
+
+    static File downloadPartial(File target) {
+        return new File(target.getParentFile(), DOWNLOAD_PARTIAL);
     }
 
     private File directory(String area, String key) throws IOException {
         File dir = new File(new File(root, area), key);
-        if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("无法创建模型目录");
+        ensureDirectory(dir);
         return dir;
+    }
+
+    private static void ensureDirectory(File dir) throws IOException {
+        if (!dir.isDirectory() && !dir.mkdirs() && !dir.isDirectory()) throw new IOException("无法创建模型目录");
     }
 
     boolean remove(File model) {

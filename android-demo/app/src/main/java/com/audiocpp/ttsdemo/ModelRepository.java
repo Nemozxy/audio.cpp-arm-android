@@ -36,8 +36,10 @@ final class ModelRepository {
     private static final String MS_REPO = "/api/v1/models/" + REPO + "/repo";
     private static final Pattern NEXT = Pattern.compile("<([^>]+)>\\s*;\\s*rel=\"?next\"?");
     private static final Pattern RATE_RESET = Pattern.compile("(?:^|;)\\s*t=(\\d+)");
+    private static final Pattern CONTENT_RANGE = Pattern.compile("bytes (\\d+)-(\\d+)/(\\d+)", Pattern.CASE_INSENSITIVE);
     private static final int CATALOG_LIMIT = 8 * 1024 * 1024;
     private static final int BUFFER_SIZE = 256 * 1024;
+    private static final int GGUF_HEADER_SIZE = 24;
 
     enum Source {
         HF("Hugging Face", "https://huggingface.co"),
@@ -143,59 +145,171 @@ final class ModelRepository {
                 ? hash.toLowerCase(Locale.ROOT) : ""));
     }
 
-    static void download(Source source, Entry entry, File target, BooleanSupplier stopped, Progress progress)
+    static boolean canResume(Entry entry) { return !entry.sha256().isEmpty(); }
+
+    static long resumableBytes(Entry entry, File target) {
+        if (!canResume(entry)) return 0;
+        long length = ModelLibrary.downloadPartial(target).length();
+        return length >= GGUF_HEADER_SIZE && length <= entry.bytes() ? length : 0;
+    }
+
+    // A replacement service may start before the previous worker leaves a blocking read.
+    static synchronized void download(Source source, Entry entry, File target, BooleanSupplier stopped,
+                                      Progress progress) throws IOException {
+        download(downloadUrl(source, entry), entry, target, stopped, progress);
+    }
+
+    static void download(URL url, Entry entry, File target, BooleanSupplier stopped, Progress progress)
             throws IOException {
         checkCancelled(stopped);
-        byte[] header = new byte[24];
+        byte[] header = new byte[GGUF_HEADER_SIZE];
         if (target.isFile() && target.length() == entry.bytes()) {
             try (InputStream input = new FileInputStream(target)) {
                 if (ModelLibrary.readHeader(input, header)) return;
             }
         }
-        long available = target.getParentFile().getUsableSpace();
-        if (available < entry.bytes()) throw new IOException("剩余空间不足，无法保存模型");
-        HttpURLConnection connection = open(downloadUrl(source, entry), "application/octet-stream");
-        File partial = null;
-        try (InputStream input = new BufferedInputStream(connection.getInputStream(), BUFFER_SIZE)) {
-            long length = contentLength(connection);
-            if (length >= 0 && length != entry.bytes()) throw new IOException("下载大小与目录不符，请刷新列表");
-            checkCancelled(stopped);
-            if (!ModelLibrary.readHeader(input, header)) throw new IOException("下载内容不是 GGUF 模型");
-            partial = File.createTempFile("gguf-", ".part", target.getParentFile());
-            MessageDigest digest = entry.sha256().isEmpty() ? null : sha256();
-            long written = header.length;
-            try (FileOutputStream output = new FileOutputStream(partial)) {
+        boolean resume = canResume(entry);
+        File partial = resume ? ModelLibrary.downloadPartial(target)
+                : File.createTempFile("gguf-", ".part", target.getParentFile());
+        try {
+            long offset = resumableBytes(entry, target);
+            if (offset > 0 && !hasGgufHeader(partial, header)) offset = 0;
+            if (partial.exists() && offset == 0 && resume) removePartial(partial);
+            if (offset == entry.bytes()) {
+                progress.update(offset, entry.bytes());
+                MessageDigest digest = sha256();
+                hashPrefix(partial, offset, digest, stopped);
+                if (entry.sha256().equals(hex(digest.digest()))) {
+                    publishDownload(entry, target, partial, stopped, progress);
+                    return;
+                }
+                removePartial(partial);
+                offset = 0;
+            }
+            requireSpace(target, entry.bytes() - offset);
+            HttpURLConnection connection = open(url, "application/octet-stream", offset);
+            try {
+                int code = connection.getResponseCode();
+                if (offset > 0 && code == 416) {
+                    connection.disconnect();
+                    connection = open(url, "application/octet-stream", 0);
+                    code = connection.getResponseCode();
+                }
+                if (code == 200) {
+                    // The host ignored or rejected Range. Replace the prefix only after
+                    // validating the new full response and its GGUF header.
+                    requireSpace(target, entry.bytes() - partial.length());
+                    offset = 0;
+                } else if (code != 206 || offset == 0 || !matchesRange(connection, offset, entry.bytes())) {
+                    throw new IOException("模型源返回的下载范围无效，请重试或切换下载源");
+                }
+                String encoding = connection.getHeaderField("Content-Encoding");
+                if (encoding != null && !encoding.equalsIgnoreCase("identity")) {
+                    throw new IOException("模型源返回了不支持的压缩格式");
+                }
+                long length = contentLength(connection);
+                if (length >= 0 && length != entry.bytes() - offset) {
+                    throw new IOException("下载大小与目录不符，请刷新列表");
+                }
+                MessageDigest digest = resume ? sha256() : null;
+                if (offset > 0) {
+                    progress.update(offset, entry.bytes());
+                    hashPrefix(partial, offset, digest, stopped);
+                }
+                try (InputStream input = new BufferedInputStream(connection.getInputStream(), BUFFER_SIZE)) {
+                    if (offset == 0 && !ModelLibrary.readHeader(input, header)) {
+                        throw new IOException("下载内容不是 GGUF 模型");
+                    }
+                    checkCancelled(stopped);
+                    receive(input, partial, entry.bytes(), offset, header, digest, stopped, progress);
+                }
+                if (digest != null && !entry.sha256().equals(hex(digest.digest()))) {
+                    removePartial(partial);
+                    throw new IOException("模型 SHA-256 校验失败，请重新下载或切换下载源");
+                }
+                publishDownload(entry, target, partial, stopped, progress);
+            } finally {
+                connection.disconnect();
+            }
+        } finally {
+            if (!resume) partial.delete();
+        }
+    }
+
+    private static void receive(InputStream input, File partial, long total, long offset, byte[] header,
+                                MessageDigest digest, BooleanSupplier stopped, Progress progress) throws IOException {
+        long written = offset;
+        try (FileOutputStream output = new FileOutputStream(partial, offset > 0)) {
+            if (offset == 0) {
                 output.write(header);
                 if (digest != null) digest.update(header);
-                byte[] buffer = new byte[BUFFER_SIZE];
-                long lastUpdate = 0;
-                while (true) {
-                    checkCancelled(stopped);
-                    int count = input.read(buffer);
-                    if (count < 0) break;
-                    written += count;
-                    if (written > entry.bytes()) throw new IOException("下载大小超过目录所列大小");
-                    output.write(buffer, 0, count);
-                    if (digest != null) digest.update(buffer, 0, count);
-                    long now = System.nanoTime();
-                    if (now - lastUpdate > 250_000_000L) {
-                        progress.update(written, entry.bytes());
-                        lastUpdate = now;
-                    }
-                }
-                if (written != entry.bytes()) throw new IOException("模型下载不完整，请重试");
-                if (digest != null && !entry.sha256().equals(hex(digest.digest()))) {
-                    throw new IOException("模型 SHA-256 校验失败，请重试或切换下载源");
-                }
-                output.getFD().sync();
+                written = header.length;
+                progress.update(written, total);
             }
-            checkCancelled(stopped);
-            if (!partial.renameTo(target)) throw new IOException("无法保存已下载的模型");
-            progress.update(written, entry.bytes());
-        } finally {
-            connection.disconnect();
-            if (partial != null && partial.exists()) partial.delete();
+            byte[] buffer = new byte[BUFFER_SIZE];
+            long lastUpdate = System.nanoTime();
+            while (true) {
+                checkCancelled(stopped);
+                int count = input.read(buffer);
+                if (count < 0) break;
+                checkCancelled(stopped);
+                if (count > total - written) throw new IOException("下载大小超过目录所列大小");
+                output.write(buffer, 0, count);
+                if (digest != null) digest.update(buffer, 0, count);
+                written += count;
+                long now = System.nanoTime();
+                if (now - lastUpdate > 250_000_000L) {
+                    progress.update(written, total);
+                    lastUpdate = now;
+                }
+            }
+            if (written != total) throw new IOException("模型下载不完整，请重试");
+            output.getFD().sync();
         }
+    }
+
+    private static boolean hasGgufHeader(File file, byte[] header) throws IOException {
+        try (InputStream input = new FileInputStream(file)) {
+            return ModelLibrary.readHeader(input, header);
+        }
+    }
+
+    private static void hashPrefix(File partial, long offset, MessageDigest digest, BooleanSupplier stopped)
+            throws IOException {
+        try (InputStream input = new FileInputStream(partial)) {
+            byte[] buffer = new byte[BUFFER_SIZE];
+            long remaining = offset;
+            while (remaining > 0) {
+                checkCancelled(stopped);
+                int count = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                if (count < 0) throw new IOException("已保存的下载进度不完整，请重试");
+                digest.update(buffer, 0, count);
+                remaining -= count;
+            }
+        }
+    }
+
+    private static void requireSpace(File target, long additional) throws IOException {
+        if (target.getParentFile().getUsableSpace() < additional) throw new IOException("剩余空间不足，无法保存模型");
+    }
+
+    private static void removePartial(File partial) throws IOException {
+        if (!partial.delete() && partial.exists()) throw new IOException("无法清理下载进度");
+    }
+
+    private static void publishDownload(Entry entry, File target, File partial, BooleanSupplier stopped,
+                                        Progress progress) throws IOException {
+        checkCancelled(stopped);
+        if (!partial.renameTo(target)) throw new IOException("无法保存已下载的模型");
+        progress.update(entry.bytes(), entry.bytes());
+    }
+
+    private static boolean matchesRange(HttpURLConnection connection, long offset, long total) {
+        String range = connection.getHeaderField("Content-Range");
+        if (range == null) return false;
+        Matcher match = CONTENT_RANGE.matcher(range);
+        return match.matches() && decimalSeconds(match.group(1)) == offset
+                && decimalSeconds(match.group(2)) == total - 1 && decimalSeconds(match.group(3)) == total;
     }
 
     private static long contentLength(HttpURLConnection connection) throws IOException {
@@ -222,6 +336,10 @@ final class ModelRepository {
     }
 
     private static HttpURLConnection open(URL start, String accept) throws IOException {
+        return open(start, accept, 0);
+    }
+
+    private static HttpURLConnection open(URL start, String accept, long offset) throws IOException {
         URL url = start;
         for (int redirects = 0; redirects < 10; redirects++) {
             if (Thread.currentThread().isInterrupted()) throw new CancellationException();
@@ -235,10 +353,11 @@ final class ModelRepository {
             connection.setRequestProperty("Accept", accept);
             connection.setRequestProperty("Accept-Encoding", "identity");
             connection.setRequestProperty("User-Agent", "audio.cpp-android-demo/1.0");
+            if (offset > 0) connection.setRequestProperty("Range", "bytes=" + offset + "-");
             boolean keepOpen = false;
             try {
                 int code = connection.getResponseCode();
-                if (code == 200) {
+                if (code == 200 || (offset > 0 && (code == 206 || code == 416))) {
                     keepOpen = true;
                     return connection;
                 }

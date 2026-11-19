@@ -34,7 +34,15 @@
     <string name="model_download_channel">模型下载</string>
     <string name="model_download_notification_progress">正在下载 · %1$s / %2$s</string>
     <string name="model_download_completed">模型下载完成</string>
-    <string name="model_download_interrupted">下载被系统中断，请重新下载。</string>
+    <string name="model_download_interrupted">下载被系统中断。重新选择同一模型可重试。</string>
+    <string name="model_download_pause">暂停下载</string>
+    <string name="model_download_pausing">正在暂停下载…</string>
+    <string name="model_download_paused">下载已暂停。重新选择同一模型可继续。</string>
+    <string name="model_download_resume">继续下载</string>
+    <string name="model_download_saved">已保存 %1$s 下载进度。</string>
+    <string name="model_download_discard">丢弃进度</string>
+    <string name="model_download_discarded">已丢弃下载进度</string>
+    <string name="model_download_discard_failed">无法丢弃下载进度</string>
     <string name="model_importing">正在导入 %1$s…</string>
     <string name="model_download_failed">下载失败：%1$s。可以重试或切换下载源。</string>
     <string name="model_import_failed">导入失败：%1$s</string>

@@ -191,7 +191,7 @@ public final class MainActivity extends Activity {
         // Do not touch active transfers if only the Activity is recreated.
         if (!recoveredModelTransfers) {
             recoveredModelTransfers = true;
-            modelLibrary.discardInterruptedTransfers();
+            modelLibrary.discardAbandonedTransfers();
         }
         wavFile = new File(getFilesDir(), "tts-output.wav");
         referenceFile = new File(getFilesDir(), "voice-reference.wav");
@@ -419,12 +419,24 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmDownload(ModelRepository.Source source, ModelRepository.Entry entry) {
-        new AlertDialog.Builder(this).setTitle(entry.name())
-                .setMessage(getString(R.string.model_download_confirm, source.label,
-                        Formatter.formatFileSize(this, entry.bytes())))
+        File target = modelLibrary.downloadPath(source, entry);
+        long saved = ModelRepository.resumableBytes(entry, target);
+        String message = getString(R.string.model_download_confirm, source.label,
+                Formatter.formatFileSize(this, entry.bytes()));
+        if (saved > 0) message += "\n\n" + getString(R.string.model_download_saved, Formatter.formatFileSize(this, saved));
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle(entry.name()).setMessage(message)
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(R.string.download_gguf, (dialog, which) -> downloadModel(source, entry))
-                .show();
+                .setPositiveButton(saved > 0 ? R.string.model_download_resume : R.string.download_gguf,
+                        (ignored, which) -> downloadModel(source, entry));
+        if (saved > 0) {
+            dialog.setNeutralButton(R.string.model_download_discard, (ignored, which) -> {
+                if (busy || downloading) return;
+                File partial = ModelLibrary.downloadPartial(target);
+                modelStatus.setText(partial.delete() || !partial.exists()
+                        ? R.string.model_download_discarded : R.string.model_download_discard_failed);
+            });
+        }
+        dialog.show();
     }
 
     private void downloadModel(ModelRepository.Source source, ModelRepository.Entry entry) {
@@ -448,13 +460,15 @@ public final class MainActivity extends Activity {
         downloading = transfer.active();
         updateControls();
         if (transfer.active()) {
+            boolean canPause = ModelDownloadService.canPause();
             modelProgress.setIndeterminate(transfer.copied() == 0);
             modelProgress.setProgress(transfer.progress());
             modelProgress.setVisibility(View.VISIBLE);
             cancelModelTransfer.setEnabled(!transfer.cancelling());
+            cancelModelTransfer.setText(canPause ? R.string.model_download_pause : android.R.string.cancel);
             cancelModelTransfer.setVisibility(View.VISIBLE);
             if (transfer.cancelling()) {
-                modelStatus.setText(R.string.model_cancelling);
+                modelStatus.setText(canPause ? R.string.model_download_pausing : R.string.model_cancelling);
             } else if (transfer.copied() == 0) {
                 modelStatus.setText(getString(R.string.model_downloading, transfer.name()));
             } else {
@@ -483,6 +497,7 @@ public final class MainActivity extends Activity {
         modelProgress.setProgress(0);
         modelProgress.setVisibility(View.VISIBLE);
         cancelModelTransfer.setEnabled(true);
+        cancelModelTransfer.setText(android.R.string.cancel);
         cancelModelTransfer.setVisibility(View.VISIBLE);
         return modelTransferCancelled;
     }
