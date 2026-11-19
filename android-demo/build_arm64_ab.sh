@@ -35,6 +35,7 @@ for VARIANT in $VARIANTS; do
 
     echo "==> Building A/B variant $VARIANT (arch=${ARCH:-portable}, KleidiAI=$KLEIDIAI)"
     ANDROID_DEMO_BUILD_ROOT="$BUILD_ROOT/$VARIANT" \
+        ANDROID_DEMO_MODELS=moss_tts_nano,moss_transcribe_diarize \
         bash "$APP_DIR/build_native.sh" "$NDK" "$ARCH" "$KLEIDIAI"
 
     LIB="$BUILD_ROOT/$VARIANT/dist/jniLibs/arm64-v8a/libaudiocpp.so"
@@ -71,9 +72,7 @@ for VARIANT in $VARIANTS; do
         echo "git_commit=$(git -C "$ROOT_DIR" rev-parse HEAD)"
         echo "git_dirty=$(git -C "$ROOT_DIR" status --porcelain | wc -l)"
     } > "$ARTIFACT_DIR/variant.txt"
-    sha256sum "$ARTIFACT_DIR/audiocpp-$VARIANT.apk" \
-        "$ROOT_DIR/GGUF/moss-tts-nano-100m-q8_0.gguf" \
-        "$ROOT_DIR/GGUF/moss-transcribe-diarize-q4_k.gguf" > "$ARTIFACT_DIR/sha256.txt"
+    sha256sum "$ARTIFACT_DIR/audiocpp-$VARIANT.apk" > "$ARTIFACT_DIR/sha256.txt"
     if [[ -n "${ANDROID_DEMO_AB_INPUT:-}" ]]; then
         if [[ ! -f "$ANDROID_DEMO_AB_INPUT" ]]; then
             echo "Benchmark input does not exist: $ANDROID_DEMO_AB_INPUT" >&2

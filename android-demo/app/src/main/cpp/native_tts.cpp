@@ -553,6 +553,8 @@ std::string model_inspection_json() {
     json += json_string(audiocpp_model_description(g_model));
     append_json_name(json, "supportsTts");
     json += supports_tts ? "true" : "false";
+    append_json_name(json, "supportsVoiceDesign");
+    json += audiocpp_model_supports(g_model, "vdes", "offline") == 1 ? "true" : "false";
     append_json_name(json, "supportsClon");
     json += supports_clon ? "true" : "false";
     append_json_name(json, "supportsAsr");
@@ -659,6 +661,12 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_audiocpp_ttsdemo_NativeTts_performanceReport(JNIEnv * env, jclass) {
     std::lock_guard<std::mutex> lock(g_diagnostic_mutex);
     return java_string(env, g_diagnostic_log);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_audiocpp_ttsdemo_NativeTts_unloadModel(JNIEnv *, jclass) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    clear_model();
 }
 
 extern "C" JNIEXPORT jstring JNICALL

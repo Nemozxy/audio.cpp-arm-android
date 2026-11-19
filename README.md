@@ -80,22 +80,15 @@ See the [Android build and integration guide](docs/build/android.md) for build o
 
 ### Build the offline voice demo
 
-The [`android-demo/`](android-demo/) app provides TTS and ASR task selection, built-in model switching, custom GGUF import, audio pickers, background inference, WAV generation and playback, selectable transcripts, visible error states, and model-driven parameter controls. Model files and generated APKs are intentionally excluded from Git.
+The [`android-demo/`](android-demo/) app provides offline TTS and ASR with a local model library, GGUF import and download, audio pickers, WAV playback, and model-driven parameter controls. The APK ships without model weights. Model files and generated APKs are intentionally excluded from Git.
 
-1. Download the models described in the [MOSS-TTS-Nano guide](docs/models/moss_tts_nano.md) and [MOSS-Transcribe-Diarize guide](docs/models/moss_transcribe_diarize.md), then place them at:
-
-   ```text
-   GGUF/moss-tts-nano-100m-q8_0.gguf
-   GGUF/moss-transcribe-diarize-q4_k.gguf
-   ```
-
-2. Build the reduced ARM64 library, JNI binding, and model assets. The demo compiles `moss_tts_nano,moss_transcribe_diarize` and packages both models without asset compression:
+1. Build the ARM64 library and JNI binding. No GGUF files are needed at build time:
 
    ```bash
    bash android-demo/build_native.sh /path/to/android-ndk
    ```
 
-3. With JDK 17 and Android SDK Platform 35 installed, build the APK:
+2. With JDK 17 and Android SDK Platform 35 installed, build the APK:
 
    ```bash
    cd android-demo
@@ -103,7 +96,7 @@ The [`android-demo/`](android-demo/) app provides TTS and ASR task selection, bu
    gradlew.bat assembleDebug      # Windows
    ```
 
-4. Install the generated APK. The two uncompressed models make this debug APK approximately 956 MB:
+3. From the repository root, install the generated APK:
 
    ```bash
    adb install -r android-demo/app/build/outputs/apk/debug/app-debug.apk
@@ -121,11 +114,13 @@ The demo leaves the C API family hint empty so the registry can identify the loa
 
 Text and numeric values use text fields; boolean values use default / true / false selectors. Blank fields mean “use the model default,” and only explicit values cross JNI. The model still performs final value validation. The reset button clears overrides without changing the loaded model.
 
-#### Custom GGUF import
+#### Model library
 
-“Import GGUF” uses the Android system document picker, validates the GGUF magic bytes, and copies the file into app-private storage without broad storage permissions. The imported model follows the same family detection, capability queries, and dynamic parameter UI as a bundled model. The selection is restored on the next launch.
+Use **导入 GGUF** to pick a local file, or **下载模型** to search `audio-cpp/audio.cpp-gguf` on Hugging Face, `hf-mirror.com`, or ModelScope. Downloads use an Android foreground service, so they can continue when you switch apps or turn off the screen. Allow notifications to see progress or cancel outside the demo. Downloads are checked against the catalog size and SHA-256 when available. A force-stopped or interrupted download has to restart from the beginning.
 
-Custom import does not add native code at runtime: the default APK accepts GGUF files from the two compiled families, `moss_tts_nano` and `moss_transcribe_diarize`. To support another family, include it in `AUDIOCPP_MODELS` and supply any optional native/data dependencies. No family-specific Java or parameter-panel branch is needed.
+Both paths store the file in app-private storage without broad storage permissions. The demo detects its family, tasks and options, and restores the last successful selection on restart. Use **本地模型** to switch or remove saved models, including any already extracted by an older APK. Inference needs no network once a model is saved.
+
+The catalog is a list of files, not a compatibility guarantee. The default native build targets MOSS-TTS-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS and Qwen3-ASR. It does not fetch additional model files or runtime dependencies. To change the compiled model set, set `ANDROID_DEMO_MODELS` to a comma-separated list of CMake model targets when invoking `build_native.sh` and supply any required native/data dependencies.
 
 #### Reference-audio voice cloning
 
@@ -137,7 +132,7 @@ With a reference selected, the demo creates a `clon/offline` session when the mo
 
 For a model that reports `asr/offline`, the demo replaces the synthesis controls with a WAV picker and transcript view. JNI decodes the PCM through audio.cpp's WAV reader, passes it to `audiocpp_request_set_audio()`, and reads the final transcript through `audiocpp_result_text()`. MOSS-Transcribe-Diarize can return timestamps and speaker labels in this text.
 
-Only one model and session are retained. Switching bundled or imported models releases the previous session and model before loading the next one, avoiding simultaneous TTS and ASR model residency. Before ASR inference, JNI mixes mono or multichannel PCM WAV input to mono and uses the demo bridge's built-in linear resampler to convert it to 16 kHz. Non-16-kHz WAV files therefore work in the demo without a packaged `libsoxr`.
+Only one model and session are retained. Switching models releases the previous session and model before loading the next one, avoiding simultaneous TTS and ASR model residency. Before ASR inference, JNI mixes mono or multichannel PCM WAV input to mono and uses the demo bridge's built-in linear resampler to convert it to 16 kHz. Non-16-kHz WAV files therefore work in the demo without a packaged `libsoxr`.
 
 #### Performance reports on physical devices
 
@@ -172,7 +167,7 @@ Not yet verified:
 - Physical ARM Android devices and representative on-device performance.
 - Vulkan inference and every model/backend combination.
 - SOXR-based non-16-kHz ASR resampling and other optional third-party dependencies; the default APK does not bundle `libsoxr`.
-- Session-option rebuild and load-option reload paths; the bundled MOSS demo exposes no load-scoped controls.
+- Session-option rebuild and load-option reload paths; the tested MOSS model exposes no load-scoped controls.
 
 Emulator success is evidence of the Android/ARM64 loading and inference path, not a guarantee of hardware-independent correctness or performance.
 

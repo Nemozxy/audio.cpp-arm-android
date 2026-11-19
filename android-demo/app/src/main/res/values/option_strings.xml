@@ -33,6 +33,8 @@
     <string name="option_recognition_language_help">留空自动识别；也可指定语言，例如 zh（中文）或 en（英语）。</string>
     <string name="option_synthesis_language">合成语言</string>
     <string name="option_synthesis_language_help">默认根据文字和音色判断，也可指定语言，例如 zh（中文）或 en（英语）。</string>
+    <string name="option_voice_description">声音描述（可选）</string>
+    <string name="option_voice_description_hint">例如：音色清亮，语速偏慢，像在轻声讲故事</string>
     <string name="option_voice">音色</string>
     <string name="option_kokoro_voice_help">音色带有对应的语言或口音；请选择与合成文字匹配的音色。</string>
     <string name="option_speed">语速倍率</string>

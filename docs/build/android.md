@@ -149,11 +149,15 @@ The demo passes a null family hint to `audiocpp_model_load`, allowing the regist
 
 Empty controls preserve model defaults. Explicit request values are applied with `audiocpp_request_set_option()`. A changed session-option signature recreates the session, while a changed load-option signature reloads the model and recreates the session. The native bridge compares sorted key/value signatures so changing request-only fields does not force either rebuild.
 
-The model picker includes bundled TTS and ASR models plus a custom GGUF action. Custom import uses `ACTION_OPEN_DOCUMENT`, validates the GGUF magic bytes, and copies the file into app-private storage. Imported files use exactly the same capability and option discovery as bundled files. Only one model and session are retained; changing models releases the previous native objects before loading the replacement.
+The APK does not ship weights. The demo can import a GGUF through `ACTION_OPEN_DOCUMENT`, or list and download GGUF files from `audio-cpp/audio.cpp-gguf` on Hugging Face, Hugging Face Mirror, or ModelScope. The first two catalogs use `main`; ModelScope uses `master`. Online transfers run in a `dataSync` foreground service started from the visible app. The service continues when the app is backgrounded, and its notification shows progress and a cancel action when notifications are allowed. Transfers validate the GGUF header and, for downloads, the expected size and SHA-256 when the source provides it. A partial file is not selectable. Force-stopping the app or a system interruption ends the transfer; retry starts a new download.
 
-Capability discovery does not remove build-time model dependencies. The bundled app compiles and packages `moss_tts_nano` and `moss_transcribe_diarize`; custom GGUF import is limited to those compiled families in the default APK. Another model family must be present in `AUDIOCPP_MODELS`, and its model package and optional native/data dependencies must be supplied and tested. No additional family-specific JNI or parameter-panel code should be necessary.
+Catalogs are cached briefly in the app process. When the Hugging Face Mirror catalog returns HTTP 429, the demo waits before requesting it again, uses its last available list, or shows a list from ModelScope if the mirror has no usable cached list. The dialog marks the fallback; the mirror remains the download source and the selected file is still validated.
 
-On MuMu (Android 12 / API 32 with ARM translation), setting the discovered `max_tokens` request option to `30` stopped generation at 30 audio frames and produced a non-silent 2.4-second, 48 kHz stereo PCM WAV. Session rebuild and load reload were not separately exercised; the bundled model exposes no load-scoped controls.
+Imported and downloaded weights share the app-private model library with files retained from earlier demo versions. They use the same capability and option discovery and are available offline. Only one model and session are retained; changing models releases the previous native objects before loading the replacement.
+
+The online catalog can contain files the APK cannot run. The default `build_native.sh` targets `moss_tts_nano,moss_transcribe_diarize,qwen3_tts,qwen3_asr`; override the list with `ANDROID_DEMO_MODELS`. The demo supports offline TTS and ASR, not every task in the repository. Use self-contained GGUF packages or supply optional native/data dependencies separately. The demo does not download sidecars separately.
+
+On MuMu (Android 12 / API 32 with ARM translation), setting the discovered `max_tokens` request option to `30` stopped generation at 30 audio frames and produced a non-silent 2.4-second, 48 kHz stereo PCM WAV. Session rebuild and load reload were not separately exercised; the tested MOSS model exposes no load-scoped controls.
 
 ## Demo reference-audio voice cloning
 
@@ -277,7 +281,7 @@ The demo creates one explicitly selected ggml backend per session. It does not u
 
 Physical Adreno performance and precision are not established by compilation or by MuMu ARM translation. See the [on-device ASR results](../reports/android_arm64_asr_performance.md) for the measured CPU and Vulkan comparison. A hybrid Encoder-Vulkan / Decoder-CPU implementation was not tested.
 
-The Debug APK also accepts an ADB-controlled benchmark while the app is in the foreground with the device awake. Import the WAV in the Demo first. The receiver is absent from release builds and requires `android.permission.DUMP` (granted to the ADB shell):
+The Debug APK also accepts an ADB-controlled benchmark while the app is in the foreground with the device awake. Import or download and select the model in the demo first; the receiver uses the current saved selection. Use the same GGUF across A/B runs, and import the WAV before testing ASR. The receiver is absent from release builds and requires `android.permission.DUMP` (granted to the ADB shell):
 
 ```bash
 adb shell am broadcast -n com.audiocpp.ttsdemo/.BenchmarkControlReceiver \
@@ -293,7 +297,7 @@ Package the demo with its matching API floor:
 gradlew.bat assembleDebug -PaudiocppMinSdk=28 --no-daemon
 ```
 
-The 2026-11-18 Windows build used NDK r28.1, Release `-O3 -DNDEBUG`, `GGML_CPU_ARM_ARCH=armv8.6-a+i8mm+dotprod+fp16`, `GGML_CPU_REPACK=ON`, `GGML_CPU_KLEIDIAI=OFF`, and Vulkan scalar shaders. ELF inspection confirmed AArch64, `NEEDED libvulkan.so`, `NEEDED libc++_shared.so`, and 244 `smmla` instructions in the packaged `libaudiocpp.so`. Instruction presence does not prove a runtime I8MM kernel hit. The APK contained both GGUF models and exactly matched the native library hash. It installed and launched on MuMu, identified the retained ASR model, and displayed both CPU I8MM and Vulkan GPU selectors; no model inference was benchmarked there. These are build and compatibility checks, not physical-device inference results.
+The 2026-11-18 Windows build used NDK r28.1, Release `-O3 -DNDEBUG`, `GGML_CPU_ARM_ARCH=armv8.6-a+i8mm+dotprod+fp16`, `GGML_CPU_REPACK=ON`, `GGML_CPU_KLEIDIAI=OFF`, and Vulkan scalar shaders. ELF inspection confirmed AArch64, `NEEDED libvulkan.so`, `NEEDED libc++_shared.so`, and 244 `smmla` instructions in the packaged `libaudiocpp.so`. Instruction presence does not prove a runtime I8MM kernel hit. That historical APK, built before weights were removed, exactly matched the native library hash. It installed and launched on MuMu, identified the retained ASR model, and displayed both CPU I8MM and Vulkan GPU selectors; no model inference was benchmarked there. These are build and compatibility checks, not physical-device inference results.
 
 ## On-device smoke test
 

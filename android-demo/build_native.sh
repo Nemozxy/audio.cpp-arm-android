@@ -15,13 +15,9 @@ API=24
 if [[ "$BACKEND" == "vulkan" ]]; then API=28; fi
 ABI="arm64-v8a"
 BUILD_ROOT="${ANDROID_DEMO_BUILD_ROOT:-$ROOT_DIR/build/android-demo}"
-MODELS=(
-    "moss-tts-nano-100m-q8_0.gguf"
-    "moss-transcribe-diarize-q4_k.gguf"
-)
+MODELS="${ANDROID_DEMO_MODELS:-moss_tts_nano,moss_transcribe_diarize,qwen3_tts,qwen3_asr}"
 DIST="$BUILD_ROOT/dist"
 JNILIBS="$APP_DIR/app/src/main/jniLibs/$ABI"
-ASSETS="$APP_DIR/app/src/main/assets/models"
 
 if [[ -z "$NDK" || ! -f "$NDK/build/cmake/android.toolchain.cmake" ]]; then
     echo "Usage: $0 /path/to/android-ndk [GGML_ARM_ARCH] [KLEIDIAI_ON_OFF] [cpu|vulkan]" >&2
@@ -30,7 +26,7 @@ fi
 
 BUILD_ARGS=(
     --ndk "$NDK" --abi "$ABI" --api "$API" --model-set custom
-    --models moss_tts_nano,moss_transcribe_diarize
+    --models "$MODELS"
     --build-root "$BUILD_ROOT" --output "$DIST" --kleidiai "$KLEIDIAI" --backend "$BACKEND" -j 8
 )
 if [[ -n "$ARM_ARCH" ]]; then
@@ -44,12 +40,9 @@ fi
 PATH="$TOOL_PATH_ROOT/build/tools/python/cmake/data/bin:$TOOL_PATH_ROOT/build/tools/ninja:$PATH" \
     "$ROOT_DIR/scripts/build_android.sh" "${BUILD_ARGS[@]}"
 
-mkdir -p "$JNILIBS" "$ASSETS"
+mkdir -p "$JNILIBS"
 cp "$DIST/jniLibs/$ABI/libaudiocpp.so" "$JNILIBS/"
 cp "$DIST/jniLibs/$ABI/libc++_shared.so" "$JNILIBS/"
-for MODEL in "${MODELS[@]}"; do
-    cp "$ROOT_DIR/GGUF/$MODEL" "$ASSETS/$MODEL"
-done
 
 HOST_TAG="linux-x86_64"
 EXE=""
@@ -68,4 +61,4 @@ LLVM_BIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
     -o "$JNILIBS/libaudiocpp_jni.so"
 "$LLVM_BIN/llvm-strip$EXE" --strip-unneeded "$JNILIBS/libaudiocpp_jni.so"
 
-echo "Demo native libraries and model are ready under $APP_DIR/app/src/main"
+echo "Demo native libraries are ready under $JNILIBS (no model weights are bundled)"

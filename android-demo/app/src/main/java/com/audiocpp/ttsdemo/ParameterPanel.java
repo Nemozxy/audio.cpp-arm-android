@@ -54,25 +54,34 @@ final class ParameterPanel {
     private final Context context;
     private final LinearLayout container;
     private final LinearLayout referenceContainer;
+    private final LinearLayout voiceDescriptionContainer;
     private final List<Binding> bindings = new ArrayList<>();
     private LinearLayout advancedContainer;
     private Button advancedButton;
     private boolean referenceAvailable;
     private int advancedCount;
 
-    ParameterPanel(Context context, LinearLayout container, LinearLayout referenceContainer) {
+    ParameterPanel(Context context, LinearLayout container, LinearLayout referenceContainer,
+                   LinearLayout voiceDescriptionContainer) {
         this.context = context;
         this.container = container;
         this.referenceContainer = referenceContainer;
+        this.voiceDescriptionContainer = voiceDescriptionContainer;
     }
 
-    void setOptions(String family, List<ModelOption> options) {
+    void setOptions(String family, boolean supportsVoiceDesign, List<ModelOption> options) {
         clear();
         advancedContainer = column();
         for (int scope : new int[]{ModelOption.REQUEST, ModelOption.SESSION, ModelOption.LOAD}) {
             boolean addedHeader = false;
             for (ModelOption option : options) {
                 if (option.scope != scope) continue;
+                if (OptionPresentation.isQwenVoiceDescription(family, supportsVoiceDesign, scope, option.name)) {
+                    addOption(voiceDescriptionContainer, family, option,
+                            OptionPresentation.QWEN_VOICE_DESCRIPTION, false, false);
+                    voiceDescriptionContainer.setVisibility(View.VISIBLE);
+                    continue;
+                }
                 OptionPresentation presentation = OptionPresentation.forOption(family, option);
                 boolean referenceOnly = scope == ModelOption.REQUEST && "reference_text".equals(option.name);
                 boolean advanced = !referenceOnly && (scope != ModelOption.REQUEST
@@ -88,7 +97,8 @@ final class ParameterPanel {
                     advancedContainer.addView(title, matchWrap());
                     addedHeader = true;
                 }
-                addOption(family, option, presentation, referenceOnly, advanced);
+                LinearLayout parent = referenceOnly ? referenceContainer : advanced ? advancedContainer : container;
+                addOption(parent, family, option, presentation, referenceOnly, advanced);
                 if (advanced) ++advancedCount;
             }
         }
@@ -114,6 +124,8 @@ final class ParameterPanel {
         bindings.clear();
         container.removeAllViews();
         referenceContainer.removeAllViews();
+        voiceDescriptionContainer.removeAllViews();
+        voiceDescriptionContainer.setVisibility(View.GONE);
         advancedButton = null;
         advancedContainer = null;
         advancedCount = 0;
@@ -200,16 +212,18 @@ final class ParameterPanel {
                 : context.getString(R.string.option_advanced_open, advancedCount));
     }
 
-    private void addOption(String family, ModelOption option, OptionPresentation presentation,
+    private void addOption(LinearLayout parent, String family, ModelOption option, OptionPresentation presentation,
                            boolean referenceOnly, boolean advanced) {
-        LinearLayout parent = referenceOnly ? referenceContainer : advanced ? advancedContainer : container;
         String key = option.key(family);
         String name = presentation.label() == 0 ? key : context.getString(presentation.label());
         TextView label = text(name + (option.requiresInput() ? " *" : ""), 15, true);
         label.setPadding(0, dp(12), 0, 0);
         parent.addView(label, matchWrap());
-        String help = presentation.help() == 0 ? option.description : context.getString(presentation.help());
-        addDetail(parent, help, 13);
+        boolean voiceDescription = parent == voiceDescriptionContainer;
+        if (!voiceDescription) {
+            String help = presentation.help() == 0 ? option.description : context.getString(presentation.help());
+            addDetail(parent, help, 13);
+        }
 
         String defaultLabel = option.requiresInput() ? context.getString(R.string.option_value_required)
                 : context.getString(R.string.option_use_default);
@@ -258,7 +272,7 @@ final class ParameterPanel {
             input.setTextSize(15);
             input.setTextColor(context.getColor(R.color.primary));
             input.setHintTextColor(context.getColor(R.color.secondary));
-            input.setHint(defaultLabel);
+            input.setHint(voiceDescription ? context.getString(R.string.option_voice_description_hint) : defaultLabel);
             input.setBackgroundResource(R.drawable.input_background);
             input.setPadding(dp(12), dp(10), dp(12), dp(10));
             attachControl(parent, label, input);

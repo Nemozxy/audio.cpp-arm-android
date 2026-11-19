@@ -3,6 +3,13 @@ package com.audiocpp.ttsdemo;
 /** Demo-specific wording and prominence. Controls and defaults still come from the model. */
 record OptionPresentation(int label, int help, boolean common, boolean multiline, boolean positive) {
     private static final OptionPresentation GENERIC = new OptionPresentation(0, 0, false, false, false);
+    static final OptionPresentation QWEN_VOICE_DESCRIPTION = new OptionPresentation(
+            R.string.option_voice_description, 0, true, true, false);
+
+    static boolean isQwenVoiceDescription(String family, boolean supportsVoiceDesign, int scope, String key) {
+        return "qwen3_tts".equals(family) && supportsVoiceDesign
+                && scope == ModelOption.REQUEST && "instruct".equals(key);
+    }
 
     private static OptionPresentation common(int label, int help) {
         return new OptionPresentation(label, help, true, false, false);

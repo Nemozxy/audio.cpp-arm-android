@@ -18,8 +18,6 @@ import java.util.Locale;
  */
 public final class BenchmarkControlReceiver extends BroadcastReceiver {
     private static final String ACTION = "com.audiocpp.ttsdemo.BENCHMARK_CONTROL";
-    private static final String ASR_MODEL = "models/moss-transcribe-diarize-q4_k.gguf";
-    private static final String TTS_MODEL = "models/moss-tts-nano-100m-q8_0.gguf";
     private static final String ASR_INPUT = "asr-input.wav";
 
     @Override
@@ -72,7 +70,8 @@ public final class BenchmarkControlReceiver extends BroadcastReceiver {
 
             NativeTts.setProfiling(profiling);
             if ("tts".equals(task)) {
-                File model = requireFile(new File(context.getFilesDir(), TTS_MODEL), "TTS model");
+                File model = requireSelectedModel(context);
+                report.append("command.model=").append(value(model.getName())).append('\n');
                 outputWav = new File(context.getFilesDir(), name + "-tts-output.wav");
                 String error = NativeTts.synthesize(model.getAbsolutePath(),
                         context.getString(R.string.default_text), outputWav.getAbsolutePath(),
@@ -83,7 +82,8 @@ public final class BenchmarkControlReceiver extends BroadcastReceiver {
                     status = "ok";
                 }
             } else if ("asr".equals(task)) {
-                File model = requireFile(new File(context.getFilesDir(), ASR_MODEL), "ASR model");
+                File model = requireSelectedModel(context);
+                report.append("command.model=").append(value(model.getName())).append('\n');
                 File input = requireFile(new File(context.getFilesDir(), ASR_INPUT), "ASR input");
                 try {
                     resultJson = NativeTts.transcribe(model.getAbsolutePath(),
@@ -135,6 +135,14 @@ public final class BenchmarkControlReceiver extends BroadcastReceiver {
             throw new IllegalStateException(label + " is missing: " + file.getAbsolutePath());
         }
         return file;
+    }
+
+    private static File requireSelectedModel(Context context) {
+        String path = context.getSharedPreferences(ModelLibrary.PREFERENCES, Context.MODE_PRIVATE)
+                .getString(ModelLibrary.SELECTED_PATH, null);
+        File model = new ModelLibrary(context.getFilesDir()).selected(path);
+        if (model == null) throw new IllegalStateException("Import or download a model and select it in the demo first");
+        return model;
     }
 
     private static void write(File file, String contents) throws Exception {

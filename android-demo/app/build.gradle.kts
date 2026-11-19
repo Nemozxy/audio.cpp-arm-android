@@ -32,7 +32,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    aaptOptions {
-        noCompress("gguf")
-    }
+    // Older checkouts may still have locally copied model assets.
+    androidResources.ignoreAssetsPattern = "*.gguf"
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }

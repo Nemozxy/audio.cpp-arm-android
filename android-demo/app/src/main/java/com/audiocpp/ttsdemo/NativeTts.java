@@ -21,6 +21,8 @@ final class NativeTts {
     /** Returns model capabilities and declared options as JSON. */
     static native String inspectModel(String modelPath);
 
+    static native void unloadModel();
+
     /** Returns null on success, otherwise a human-readable error. */
     static native String synthesize(String modelPath, String text, String outputPath,
                                     String referenceAudioPath, int threads, String backend,

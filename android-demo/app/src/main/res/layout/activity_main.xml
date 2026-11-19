@@ -35,23 +35,13 @@
             android:orientation="horizontal">
 
             <Button
-                android:id="@+id/builtinTtsButton"
+                android:id="@+id/modelLibraryButton"
                 style="?android:attr/buttonBarButtonStyle"
                 android:layout_width="0dp"
-                android:layout_height="52dp"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
                 android:layout_weight="1"
-                android:text="@string/builtin_tts"
-                android:textAllCaps="false"
-                android:textColor="@color/accent" />
-
-            <Button
-                android:id="@+id/builtinAsrButton"
-                style="?android:attr/buttonBarButtonStyle"
-                android:layout_width="0dp"
-                android:layout_height="52dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:text="@string/builtin_asr"
+                android:text="@string/model_library"
                 android:textAllCaps="false"
                 android:textColor="@color/accent" />
 
@@ -59,10 +49,23 @@
                 android:id="@+id/importModelButton"
                 style="?android:attr/buttonBarButtonStyle"
                 android:layout_width="0dp"
-                android:layout_height="52dp"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
                 android:layout_marginStart="6dp"
                 android:layout_weight="1"
                 android:text="@string/import_gguf"
+                android:textAllCaps="false"
+                android:textColor="@color/accent" />
+
+            <Button
+                android:id="@+id/downloadModelButton"
+                style="?android:attr/buttonBarButtonStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:minHeight="52dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:text="@string/download_gguf"
                 android:textAllCaps="false"
                 android:textColor="@color/accent" />
         </LinearLayout>
@@ -90,11 +93,36 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="@string/loading_native"
+                android:text="@string/model_empty"
                 android:textColor="@color/secondary"
                 android:textIsSelectable="true"
                 android:textSize="14sp" />
+
+            <ProgressBar
+                android:id="@+id/modelProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:max="1000"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/cancelModelTransfer"
+                style="?android:attr/buttonBarButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:text="@android:string/cancel"
+                android:visibility="gone" />
         </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/inferenceControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -223,6 +251,13 @@
                 android:textColor="@color/primary"
                 android:textColorHint="@color/secondary"
                 android:textSize="17sp" />
+
+            <LinearLayout
+                android:id="@+id/voiceDescriptionContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout
@@ -445,14 +480,6 @@
             android:textSize="16sp"
             android:visibility="gone" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:layout_marginBottom="12dp"
-            android:gravity="center"
-            android:text="@string/offline_note"
-            android:textColor="@color/secondary"
-            android:textSize="13sp" />
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>

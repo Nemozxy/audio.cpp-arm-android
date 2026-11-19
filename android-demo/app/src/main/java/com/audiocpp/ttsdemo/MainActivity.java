@@ -1,16 +1,20 @@
 package com.audiocpp.ttsdemo;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.res.AssetFileDescriptor;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.OpenableColumns;
+import android.text.format.Formatter;
 import android.util.Log;
 import android.view.View;
 import android.widget.AdapterView;
@@ -33,19 +37,22 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class MainActivity extends Activity {
     private static final String TAG = "AudioCppDemo";
-    private static final String TTS_MODEL_ASSET = "models/moss-tts-nano-100m-q8_0.gguf";
-    private static final String ASR_MODEL_ASSET = "models/moss-transcribe-diarize-q4_k.gguf";
-    private static final String PREFS = "model-selection";
-    private static final String PREF_MODEL_PATH = "model-path";
     private static final int REQUEST_REFERENCE_AUDIO = 42;
     private static final int REQUEST_ASR_AUDIO = 43;
     private static final int REQUEST_GGUF_MODEL = 44;
     private static final int REQUEST_EXPORT_PERFORMANCE = 45;
+    private static final int REQUEST_DOWNLOAD_NOTIFICATION = 46;
+    private static final String DOWNLOAD_NOTIFICATION_ASKED = "download-notification-asked";
+    private static final ModelCatalog MODEL_CATALOG = new ModelCatalog(
+            ModelRepository::fetchCatalog, SystemClock::elapsedRealtime);
+    private static boolean recoveredModelTransfers;
 
     private static final class TaskEntry {
         final String id;
@@ -84,7 +91,9 @@ public final class MainActivity extends Activity {
     }
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService catalogWorker = Executors.newFixedThreadPool(ModelRepository.Source.values().length);
     private final List<TaskEntry> tasks = new ArrayList<>();
+    private final Runnable downloadObserver = this::renderDownload;
 
     private EditText inputText;
     private EditText threadsInput;
@@ -95,11 +104,13 @@ public final class MainActivity extends Activity {
     private Button selectReferenceButton;
     private Button clearReferenceButton;
     private Button selectAsrAudioButton;
-    private Button builtinTtsButton;
-    private Button builtinAsrButton;
+    private Button modelLibraryButton;
+    private Button downloadModelButton;
     private Button importModelButton;
+    private Button cancelModelTransfer;
     private Button exportPerformanceButton;
     private ProgressBar progress;
+    private ProgressBar modelProgress;
     private TextView modelName;
     private TextView modelStatus;
     private TextView referenceStatus;
@@ -112,9 +123,11 @@ public final class MainActivity extends Activity {
     private LinearLayout asrInputSection;
     private Spinner taskSpinner;
     private ParameterPanel parameterPanel;
+    private View inferenceControls;
+    private ModelLibrary modelLibrary;
+    private AtomicBoolean modelTransferCancelled;
     private File modelFile;
-    private File ttsModelFile;
-    private File asrModelFile;
+    private File restoreAfterDownload;
     private File wavFile;
     private File referenceFile;
     private File asrAudioFile;
@@ -127,9 +140,9 @@ public final class MainActivity extends Activity {
     private MediaPlayer player;
     private boolean modelReady;
     private boolean busy;
+    private boolean downloading;
     private boolean hasPerformanceReport;
-    private boolean supportsTts;
-    private boolean supportsClon;
+    private boolean requiresSpeakerReference;
     private boolean speakerReferenceSupported;
 
     @Override
@@ -146,11 +159,14 @@ public final class MainActivity extends Activity {
         selectReferenceButton = findViewById(R.id.selectReferenceButton);
         clearReferenceButton = findViewById(R.id.clearReferenceButton);
         selectAsrAudioButton = findViewById(R.id.selectAsrAudioButton);
-        builtinTtsButton = findViewById(R.id.builtinTtsButton);
-        builtinAsrButton = findViewById(R.id.builtinAsrButton);
+        modelLibraryButton = findViewById(R.id.modelLibraryButton);
+        downloadModelButton = findViewById(R.id.downloadModelButton);
         importModelButton = findViewById(R.id.importModelButton);
+        cancelModelTransfer = findViewById(R.id.cancelModelTransfer);
         exportPerformanceButton = findViewById(R.id.exportPerformanceButton);
         progress = findViewById(R.id.progress);
+        modelProgress = findViewById(R.id.modelProgress);
+        inferenceControls = findViewById(R.id.inferenceControls);
         modelName = findViewById(R.id.modelName);
         modelStatus = findViewById(R.id.modelStatus);
         referenceStatus = findViewById(R.id.referenceStatus);
@@ -163,10 +179,14 @@ public final class MainActivity extends Activity {
         asrInputSection = findViewById(R.id.asrInputSection);
         taskSpinner = findViewById(R.id.taskSpinner);
         parameterPanel = new ParameterPanel(this, findViewById(R.id.parametersContainer),
-                findViewById(R.id.referenceParametersContainer));
+                findViewById(R.id.referenceParametersContainer), findViewById(R.id.voiceDescriptionContainer));
 
-        ttsModelFile = new File(getFilesDir(), TTS_MODEL_ASSET);
-        asrModelFile = new File(getFilesDir(), ASR_MODEL_ASSET);
+        modelLibrary = new ModelLibrary(getFilesDir());
+        // Do not touch active transfers if only the Activity is recreated.
+        if (!recoveredModelTransfers) {
+            recoveredModelTransfers = true;
+            modelLibrary.discardInterruptedTransfers();
+        }
         wavFile = new File(getFilesDir(), "tts-output.wav");
         referenceFile = new File(getFilesDir(), "voice-reference.wav");
         asrAudioFile = new File(getFilesDir(), "asr-input.wav");
@@ -177,9 +197,20 @@ public final class MainActivity extends Activity {
         profilingEnabled.setOnCheckedChangeListener((view, enabled) -> NativeTts.setProfiling(enabled));
         playButton.setOnClickListener(view -> playAudio());
         exportPerformanceButton.setOnClickListener(view -> exportPerformanceReport());
-        builtinTtsButton.setOnClickListener(view -> selectModel(ttsModelFile, TTS_MODEL_ASSET));
-        builtinAsrButton.setOnClickListener(view -> selectModel(asrModelFile, ASR_MODEL_ASSET));
+        modelLibraryButton.setOnClickListener(view -> showModelLibrary());
+        downloadModelButton.setOnClickListener(view ->
+                new ModelCatalogDialog(this, modelPreferences(), catalogWorker, MODEL_CATALOG,
+                        this::confirmDownload).show());
         importModelButton.setOnClickListener(view -> selectGgufModel());
+        cancelModelTransfer.setOnClickListener(view -> {
+            if (downloading) {
+                ModelDownloadService.requestCancel(this);
+                return;
+            }
+            if (modelTransferCancelled != null) modelTransferCancelled.set(true);
+            cancelModelTransfer.setEnabled(false);
+            modelStatus.setText(R.string.model_cancelling);
+        });
         selectReferenceButton.setOnClickListener(view -> selectAudio(REQUEST_REFERENCE_AUDIO));
         selectAsrAudioButton.setOnClickListener(view -> selectAudio(REQUEST_ASR_AUDIO));
         clearReferenceButton.setOnClickListener(view -> clearReferenceAudio());
@@ -199,91 +230,258 @@ public final class MainActivity extends Activity {
         });
 
         updateAudioStatuses();
-        File initialModel = ttsModelFile;
-        String initialAsset = TTS_MODEL_ASSET;
-        String savedPath = getPreferences(MODE_PRIVATE).getString(PREF_MODEL_PATH, "");
-        if (asrModelFile.getAbsolutePath().equals(savedPath)) {
-            initialModel = asrModelFile;
-            initialAsset = ASR_MODEL_ASSET;
-        } else if (!ttsModelFile.getAbsolutePath().equals(savedPath)
-                && savedPath != null && !savedPath.isEmpty()) {
-            File custom = new File(savedPath);
-            if (custom.isFile()) {
-                initialModel = custom;
-                initialAsset = null;
-            }
+        File initialModel = modelLibrary.selected(modelPreferences().getString(ModelLibrary.SELECTED_PATH, null));
+        if (ModelDownloadService.current() == null) {
+            if (initialModel != null) selectModel(initialModel);
+        } else {
+            restoreAfterDownload = initialModel;
         }
-        selectModel(initialModel, initialAsset);
     }
 
-    private void selectModel(File target, String asset) {
-        if (busy) {
-            return;
-        }
-        releasePlayer();
-        modelFile = target;
-        lastRun = null;
-        hasPerformanceReport = false;
-        modelReady = false;
-        supportsTts = false;
-        supportsClon = false;
-        speakerReferenceSupported = false;
-        tasks.clear();
-        parameterPanel.clear();
-        transcriptTitle.setVisibility(View.GONE);
-        transcriptText.setVisibility(View.GONE);
-        modelName.setText(target.getName());
+    @Override
+    protected void onResume() {
+        super.onResume();
+        ModelDownloadService.observe(downloadObserver);
+    }
+
+    @Override
+    protected void onPause() {
+        ModelDownloadService.removeObserver(downloadObserver);
+        super.onPause();
+    }
+
+    private SharedPreferences modelPreferences() {
+        return getSharedPreferences(ModelLibrary.PREFERENCES, MODE_PRIVATE);
+    }
+
+    private void selectModel(File target) {
+        selectModel(target, null);
+    }
+
+    private void selectModel(File target, String downloadMessage) {
+        if (busy) return;
+        busy = true;
+        updateControls();
         modelStatus.setText(R.string.detecting_model);
-        statusText.setText(asset == null ? R.string.detecting_model : R.string.extracting_model);
-        setBusy(true);
+        modelProgress.setIndeterminate(true);
+        modelProgress.setVisibility(View.VISIBLE);
 
         worker.execute(() -> {
             try {
-                nativeVersion = NativeTts.nativeVersion();
-                if (asset != null) {
-                    ensureModelExtracted(target, asset);
-                }
-                if (!target.isFile()) {
-                    throw new IOException("模型文件不存在：" + target.getName());
-                }
-                postToUi(() -> modelStatus.setText(R.string.detecting_model));
+                String version = NativeTts.nativeVersion();
                 JSONObject inspection = new JSONObject(NativeTts.inspectModel(target.getAbsolutePath()));
                 String family = inspection.getString("family");
                 List<ModelOption> options = ModelOption.readOptions(inspection.getJSONArray("options"));
+                boolean supportsTts = inspection.optBoolean("supportsTts");
+                boolean supportsClon = inspection.optBoolean("supportsClon");
+                boolean tts = supportsTts || supportsClon;
+                boolean asr = inspection.optBoolean("supportsAsr");
+                if (!tts && !asr) throw new IOException(getString(R.string.model_no_task));
                 postToUi(() -> {
-                    if (modelFile == null || !modelFile.equals(target)) {
-                        return;
-                    }
+                    releasePlayer();
+                    modelFile = target;
+                    lastRun = null;
+                    hasPerformanceReport = false;
+                    transcriptText.setText("");
                     modelName.setText(target.getName() + "\n" + family);
+                    nativeVersion = version;
                     modelFamily = family;
-                    supportsTts = inspection.optBoolean("supportsTts");
-                    supportsClon = inspection.optBoolean("supportsClon");
+                    requiresSpeakerReference = !supportsTts && supportsClon;
                     speakerReferenceSupported = inspection.optBoolean("supportsSpeakerReference");
                     tasks.clear();
-                    if (supportsTts || supportsClon) {
+                    if (tts) {
                         tasks.add(new TaskEntry("tts", getString(R.string.task_tts)));
                     }
-                    if (inspection.optBoolean("supportsAsr")) {
+                    if (asr) {
                         tasks.add(new TaskEntry("asr", getString(R.string.task_asr)));
                     }
                     ArrayAdapter<TaskEntry> adapter = new ArrayAdapter<>(this,
                             android.R.layout.simple_spinner_item, tasks);
                     adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
                     taskSpinner.setAdapter(adapter);
-                    parameterPanel.setOptions(family, options);
+                    parameterPanel.setOptions(family, inspection.optBoolean("supportsVoiceDesign"), options);
                     modelReady = true;
+                    modelProgress.setVisibility(View.GONE);
                     setBusy(false);
                     updateTaskUi();
-                    modelStatus.setText(family + " · audio.cpp " + nativeVersion + " · ARM64");
+                    modelStatus.setText(downloadMessage == null ? readyModelStatus()
+                            : readyModelStatus() + "\n" + downloadMessage);
                     statusText.setText(R.string.model_ready);
-                    SharedPreferences preferences = getPreferences(MODE_PRIVATE);
-                    preferences.edit().putString(PREF_MODEL_PATH, target.getAbsolutePath()).apply();
+                    modelPreferences().edit().putString(ModelLibrary.SELECTED_PATH, target.getAbsolutePath()).apply();
                 });
             } catch (Throwable error) {
                 Log.e(TAG, "Model loading failed", error);
-                postToUi(() -> showError("模型加载失败：" + readableMessage(error)));
+                postToUi(() -> finishModelTransfer(null, getString(R.string.model_load_failed,
+                        target.getName(), readableMessage(error))));
             }
         });
+    }
+
+    private String readyModelStatus() {
+        return modelFamily + " · audio.cpp " + nativeVersion + " · ARM64";
+    }
+
+    private void showModelLibrary() {
+        List<File> models = modelLibrary.files();
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.model_library).setNegativeButton(android.R.string.cancel, null);
+        if (models.isEmpty()) {
+            dialog.setMessage(R.string.model_library_empty).show();
+            return;
+        }
+        String[] labels = new String[models.size()];
+        for (int i = 0; i < labels.length; i++) {
+            File file = models.get(i);
+            int origin = switch (modelLibrary.area(file)) {
+                case "downloaded-models" -> R.string.model_origin_downloaded;
+                case "custom-models" -> R.string.model_origin_imported;
+                default -> R.string.model_origin_legacy;
+            };
+            labels[i] = file.getName() + "\n" + Formatter.formatFileSize(this, file.length())
+                    + " · " + getString(origin)
+                    + (file.equals(modelFile) ? getString(R.string.model_active) : "");
+        }
+        dialog.setItems(labels, (ignored, index) -> {
+            File file = models.get(index);
+            AlertDialog.Builder actions = new AlertDialog.Builder(this).setTitle(file.getName())
+                    .setNegativeButton(android.R.string.cancel, null);
+            if (file.equals(modelFile)) {
+                actions.setMessage(R.string.model_active_detail);
+            } else {
+                actions.setPositiveButton(R.string.model_use, (d, w) -> selectModel(file));
+            }
+            actions.setNeutralButton(R.string.model_remove, (d, w) ->
+                    new AlertDialog.Builder(this).setMessage(getString(R.string.model_remove_confirm, file.getName()))
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .setPositiveButton(R.string.model_remove, (confirm, button) -> removeModel(file)).show());
+            actions.show();
+        }).show();
+    }
+
+    private void removeModel(File target) {
+        if (busy) return;
+        boolean active = target.equals(modelFile);
+        busy = true;
+        updateControls();
+        worker.execute(() -> {
+            boolean success;
+            try {
+                if (active) NativeTts.unloadModel();
+                success = modelLibrary.remove(target);
+            } catch (Throwable error) {
+                Log.e(TAG, "Model removal failed", error);
+                success = false;
+            }
+            boolean removed = success;
+            postToUi(() -> {
+                if (removed) {
+                    String saved = modelPreferences().getString(ModelLibrary.SELECTED_PATH, null);
+                    if (target.getAbsolutePath().equals(saved)) {
+                        modelPreferences().edit().remove(ModelLibrary.SELECTED_PATH).apply();
+                    }
+                    if (active) {
+                        releasePlayer();
+                        modelFile = null;
+                        modelReady = false;
+                        lastRun = null;
+                        hasPerformanceReport = false;
+                        parameterPanel.clear();
+                        transcriptText.setText("");
+                        modelName.setText(R.string.model_name);
+                        modelStatus.setText(R.string.model_empty);
+                    }
+                } else {
+                    modelStatus.setText(R.string.model_remove_failed);
+                }
+                setBusy(false);
+            });
+        });
+    }
+
+    private void confirmDownload(ModelRepository.Source source, ModelRepository.Entry entry) {
+        new AlertDialog.Builder(this).setTitle(entry.name())
+                .setMessage(getString(R.string.model_download_confirm, source.label,
+                        Formatter.formatFileSize(this, entry.bytes())))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.download_gguf, (dialog, which) -> downloadModel(source, entry))
+                .show();
+    }
+
+    private void downloadModel(ModelRepository.Source source, ModelRepository.Entry entry) {
+        if (busy || downloading) return;
+        try {
+            ModelDownloadService.start(this, source, entry);
+        } catch (RuntimeException error) {
+            showError(getString(R.string.model_download_failed, readableMessage(error)));
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33 && !modelPreferences().getBoolean(DOWNLOAD_NOTIFICATION_ASKED, false)
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            modelPreferences().edit().putBoolean(DOWNLOAD_NOTIFICATION_ASKED, true).apply();
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_DOWNLOAD_NOTIFICATION);
+        }
+    }
+
+    private void renderDownload() {
+        ModelDownloadService.State transfer = ModelDownloadService.current();
+        if (transfer == null) return;
+        downloading = transfer.active();
+        updateControls();
+        if (transfer.active()) {
+            modelProgress.setIndeterminate(transfer.copied() == 0);
+            modelProgress.setProgress(transfer.progress());
+            modelProgress.setVisibility(View.VISIBLE);
+            cancelModelTransfer.setEnabled(!transfer.cancelling());
+            cancelModelTransfer.setVisibility(View.VISIBLE);
+            if (transfer.cancelling()) {
+                modelStatus.setText(R.string.model_cancelling);
+            } else if (transfer.copied() == 0) {
+                modelStatus.setText(getString(R.string.model_downloading, transfer.name()));
+            } else {
+                modelStatus.setText(getString(R.string.model_download_progress, transfer.name(),
+                        Formatter.formatFileSize(this, transfer.copied()), Formatter.formatFileSize(this, transfer.total())));
+            }
+        } else {
+            ModelDownloadService.consumeResult(this);
+            File previous = restoreAfterDownload;
+            restoreAfterDownload = null;
+            if (transfer.model() == null && previous != null) {
+                finishModelTransfer(null, transfer.message());
+                selectModel(previous, transfer.message());
+            } else {
+                finishModelTransfer(transfer.model(), transfer.message());
+            }
+        }
+    }
+
+    private AtomicBoolean beginModelTransfer(String message, boolean indeterminate) {
+        modelTransferCancelled = new AtomicBoolean();
+        busy = true;
+        updateControls();
+        modelStatus.setText(message);
+        modelProgress.setIndeterminate(indeterminate);
+        modelProgress.setProgress(0);
+        modelProgress.setVisibility(View.VISIBLE);
+        cancelModelTransfer.setEnabled(true);
+        cancelModelTransfer.setVisibility(View.VISIBLE);
+        return modelTransferCancelled;
+    }
+
+    private String transferError(AtomicBoolean cancelled, int format, Exception error) {
+        return cancelled.get() || error instanceof CancellationException
+                ? getString(R.string.model_cancelled) : getString(format, readableMessage(error));
+    }
+
+    private void finishModelTransfer(File target, String message) {
+        modelTransferCancelled = null;
+        modelProgress.setVisibility(View.GONE);
+        cancelModelTransfer.setVisibility(View.GONE);
+        setBusy(false);
+        if (target != null) selectModel(target);
+        else {
+            modelStatus.setText(message);
+            modelStatus.announceForAccessibility(message);
+        }
     }
 
     private void selectGgufModel() {
@@ -348,33 +546,46 @@ public final class MainActivity extends Activity {
     }
 
     private void importGgufModel(Uri source) {
-        String displayName = queryDisplayName(source, "custom.gguf")
-                .replaceAll("[^A-Za-z0-9._-]", "_");
-        if (!displayName.toLowerCase(Locale.ROOT).endsWith(".gguf")) {
-            displayName += ".gguf";
-        }
-        File directory = new File(getFilesDir(), "custom-models");
-        if (!directory.isDirectory() && !directory.mkdirs()) {
-            showError("无法创建自定义模型目录");
-            return;
-        }
-        File destination = new File(directory, System.currentTimeMillis() + "-" + displayName);
-        setBusy(true);
-        modelStatus.setText("正在复制自定义 GGUF…");
-        statusText.setText("正在复制自定义 GGUF，大文件可能需要一些时间…");
+        if (busy) return;
+        String name = queryDisplayName(source, "custom.gguf");
+        AtomicBoolean cancelled = beginModelTransfer(getString(R.string.model_importing, name), true);
         worker.execute(() -> {
+            File destination = null;
             try {
-                copyUri(source, destination, true);
-                postToUi(() -> {
-                    setBusy(false);
-                    selectModel(destination, null);
-                });
+                destination = modelLibrary.importTarget(name);
+                copyModelUri(source, destination, cancelled);
+                File completed = destination;
+                postToUi(() -> finishModelTransfer(completed, null));
             } catch (Exception error) {
-                destination.delete();
-                Log.e(TAG, "GGUF import failed", error);
-                postToUi(() -> showError("自定义模型导入失败：" + readableMessage(error)));
+                if (destination != null) destination.getParentFile().delete();
+                postToUi(() -> finishModelTransfer(null, transferError(cancelled, R.string.model_import_failed, error)));
             }
         });
+    }
+
+    private void copyModelUri(Uri source, File destination, AtomicBoolean cancelled) throws IOException {
+        File partial = new File(destination.getParentFile(), "import.part");
+        try (InputStream input = getContentResolver().openInputStream(source)) {
+            byte[] header = new byte[24];
+            if (input == null || !ModelLibrary.readHeader(input, header)) {
+                throw new IOException(getString(R.string.model_invalid));
+            }
+            try (FileOutputStream output = new FileOutputStream(partial)) {
+                output.write(header);
+                byte[] buffer = new byte[256 * 1024];
+                while (!cancelled.get()) {
+                    int count = input.read(buffer);
+                    if (count < 0) break;
+                    output.write(buffer, 0, count);
+                }
+                if (cancelled.get()) throw new CancellationException();
+                output.getFD().sync();
+            }
+            if (cancelled.get()) throw new CancellationException();
+            if (!partial.renameTo(destination)) throw new IOException(getString(R.string.model_save_failed));
+        } finally {
+            if (partial.exists()) partial.delete();
+        }
     }
 
     private void importAudio(Uri source, boolean reference) {
@@ -389,7 +600,7 @@ public final class MainActivity extends Activity {
         statusText.setText("正在复制音频…");
         worker.execute(() -> {
             try {
-                copyUri(source, destination, false);
+                copyAudioUri(source, destination);
                 postToUi(() -> {
                     if (reference) parameterPanel.resetReference();
                     setBusy(false);
@@ -405,7 +616,7 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void copyUri(Uri source, File destination, boolean model) throws IOException {
+    private void copyAudioUri(Uri source, File destination) throws IOException {
         File temporary = new File(destination.getPath() + ".tmp");
         if (temporary.exists() && !temporary.delete()) {
             throw new IOException("无法清理旧的临时文件");
@@ -421,7 +632,7 @@ public final class MainActivity extends Activity {
                 output.write(buffer, 0, count);
             }
             output.getFD().sync();
-            validateCopiedFile(temporary, model);
+            validateWav(temporary);
             if (destination.exists() && !destination.delete()) {
                 throw new IOException("无法替换旧文件");
             }
@@ -435,22 +646,14 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private static void validateCopiedFile(File file, boolean model) throws IOException {
-        int minimum = model ? 4 : 44;
-        if (file.length() < minimum) {
-            throw new IOException(model ? "GGUF 文件为空或不完整" : "WAV 文件为空或不完整");
-        }
+    private static void validateWav(File file) throws IOException {
+        if (file.length() < 44) throw new IOException("WAV 文件为空或不完整");
         byte[] header = new byte[12];
         int count;
         try (FileInputStream input = new FileInputStream(file)) {
             count = input.read(header);
         }
-        if (model) {
-            if (count < 4 || header[0] != 'G' || header[1] != 'G'
-                    || header[2] != 'U' || header[3] != 'F') {
-                throw new IOException("所选文件不是有效的 GGUF 模型");
-            }
-        } else if (count < 12 || header[0] != 'R' || header[1] != 'I'
+        if (count < 12 || header[0] != 'R' || header[1] != 'I'
                 || header[2] != 'F' || header[3] != 'F'
                 || header[8] != 'W' || header[9] != 'A'
                 || header[10] != 'V' || header[11] != 'E') {
@@ -500,43 +703,6 @@ public final class MainActivity extends Activity {
         updateControls();
     }
 
-    private void ensureModelExtracted(File target, String asset) throws IOException {
-        File parent = target.getParentFile();
-        if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
-            throw new IOException("无法创建模型目录");
-        }
-        long expectedSize;
-        try (AssetFileDescriptor descriptor = getAssets().openFd(asset)) {
-            expectedSize = descriptor.getLength();
-        }
-        if (target.isFile() && target.length() == expectedSize) {
-            return;
-        }
-        File temporary = new File(target.getPath() + ".tmp");
-        if (temporary.exists() && !temporary.delete()) {
-            throw new IOException("无法清理旧的模型临时文件");
-        }
-        try (InputStream input = getAssets().open(asset);
-             FileOutputStream output = new FileOutputStream(temporary)) {
-            byte[] buffer = new byte[1024 * 1024];
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                output.write(buffer, 0, count);
-            }
-            output.getFD().sync();
-        }
-        if (temporary.length() != expectedSize) {
-            temporary.delete();
-            throw new IOException("模型解压大小不匹配");
-        }
-        if (target.exists() && !target.delete()) {
-            throw new IOException("无法替换旧模型文件");
-        }
-        if (!temporary.renameTo(target)) {
-            throw new IOException("无法保存模型文件");
-        }
-    }
-
     private String currentTask() {
         int position = taskSpinner.getSelectedItemPosition();
         if (position >= 0 && position < tasks.size()) {
@@ -572,6 +738,7 @@ public final class MainActivity extends Activity {
         if (synthesizeButton == null) {
             return;
         }
+        boolean busy = this.busy || downloading;
         boolean tts = "tts".equals(currentTask());
         synthesizeButton.setText(tts ? R.string.synthesize : R.string.transcribe);
         synthesizeButton.setEnabled(modelReady && !busy);
@@ -586,8 +753,9 @@ public final class MainActivity extends Activity {
         clearReferenceButton.setEnabled(modelReady && !busy && tts && referenceFile.isFile());
         selectAsrAudioButton.setEnabled(modelReady && !busy && !tts);
         playButton.setEnabled(modelReady && !busy && tts && wavFile.isFile());
-        builtinTtsButton.setEnabled(!busy);
-        builtinAsrButton.setEnabled(!busy);
+        inferenceControls.setVisibility(modelReady ? View.VISIBLE : View.GONE);
+        modelLibraryButton.setEnabled(!busy);
+        downloadModelButton.setEnabled(!busy);
         importModelButton.setEnabled(!busy);
         exportPerformanceButton.setEnabled(hasPerformanceReport && !busy);
     }
@@ -597,7 +765,7 @@ public final class MainActivity extends Activity {
             showError("模型尚未就绪");
             return;
         }
-        modelStatus.setText(modelFamily + " · audio.cpp " + nativeVersion + " · ARM64");
+        modelStatus.setText(readyModelStatus());
         if ("asr".equals(currentTask())) {
             transcribe();
         } else {
@@ -627,7 +795,7 @@ public final class MainActivity extends Activity {
             showError("请先输入要合成的文字");
             return;
         }
-        if (!supportsTts && supportsClon && !referenceFile.isFile()) {
+        if (requiresSpeakerReference && !referenceFile.isFile()) {
             showError("当前模型需要参考音频才能进行语音克隆");
             return;
         }
@@ -803,8 +971,10 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (modelTransferCancelled != null) modelTransferCancelled.set(true);
         releasePlayer();
         worker.shutdownNow();
+        catalogWorker.shutdownNow();
         super.onDestroy();
     }
 }
