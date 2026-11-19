@@ -155,9 +155,24 @@ Catalogs are cached briefly in the app process. When the Hugging Face Mirror cat
 
 Imported and downloaded weights share the app-private model library with files retained from earlier demo versions. They use the same capability and option discovery and are available offline. Only one model and session are retained; changing models releases the previous native objects before loading the replacement.
 
-The online catalog can contain files the APK cannot run. The default `build_native.sh` targets `moss_tts_nano,moss_transcribe_diarize,qwen3_tts,qwen3_asr`; override the list with `ANDROID_DEMO_MODELS`. The demo supports offline TTS and ASR, not every task in the repository. Use self-contained GGUF packages or supply optional native/data dependencies separately. The demo does not download sidecars separately.
+The online catalog can contain files the APK cannot run. The default `build_native.sh` targets `moss_tts_nano,moss_transcribe_diarize,qwen3_tts,qwen3_asr,index_tts2,breeze_tts`; override the list with `ANDROID_DEMO_MODELS`. The demo supports offline TTS and ASR, not every task in the repository. Use self-contained GGUF packages. The demo does not download sidecars separately.
 
 On MuMu (Android 12 / API 32 with ARM translation), setting the discovered `max_tokens` request option to `30` stopped generation at 30 audio frames and produced a non-silent 2.4-second, 48 kHz stereo PCM WAV. Session rebuild and load reload were not separately exercised; the tested MOSS model exposes no load-scoped controls.
+
+## Demo model workflows
+
+| Model | Main controls and requirements |
+|---|---|
+| IndexTTS 2 / 2.5 | Reference WAV required. Optional emotion text automatically enables text-based emotion conditioning; blend strength and duration scale are separate. The 2.5 checkpoint also declares language selection and text normalization. |
+| BreezeTTS 2 | Optional voice instruction. A reference WAV is optional, but when supplied its transcript is required. |
+| Qwen3-TTS Base | Reference WAV required. The reference transcript is required unless speaker-embedding-only mode is enabled. |
+| Qwen3-TTS CustomVoice | Select a preset speaker from the loaded checkpoint; optional speaking-style instruction. No reference WAV. |
+| Qwen3-TTS VoiceDesign | Optional voice description. No reference WAV or preset speaker. |
+| MOSS-TTS-Nano | Default voice when no reference WAV is selected; optional transcript with a reference. The generation limit is in acoustic frames, not speech speed. |
+| MOSS-Transcribe-Diarize | Speaker labels and segment timestamps by default. A custom instruction replaces the built-in transcription prompt and may change the output format. |
+| Qwen3-ASR | Automatic or checkpoint-supported recognition language, fixed or unchunked offline transcription, and plain-text output. The Demo does not configure VAD or a forced aligner for word timestamps. |
+
+TTS variants are selected by native checkpoint capabilities and declared options, not the GGUF filename. Optional controls preserve model defaults when left blank. Other compiled families use the generic option panel.
 
 ## Demo reference-audio voice cloning
 

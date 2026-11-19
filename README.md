@@ -120,7 +120,7 @@ Use **导入 GGUF** to pick a local file, or **下载模型** to search `audio-c
 
 Both paths store the file in app-private storage without broad storage permissions. The demo detects its family, tasks and options, and restores the last successful selection on restart. Use **本地模型** to switch or remove saved models, including any already extracted by an older APK. Inference needs no network once a model is saved.
 
-The catalog is a list of files, not a compatibility guarantee. The default native build targets MOSS-TTS-Nano, MOSS-Transcribe-Diarize, Qwen3-TTS and Qwen3-ASR. It does not fetch additional model files or runtime dependencies. To change the compiled model set, set `ANDROID_DEMO_MODELS` to a comma-separated list of CMake model targets when invoking `build_native.sh` and supply any required native/data dependencies.
+The catalog is a list of files, not a compatibility guarantee. The default native build targets IndexTTS 2/2.5, BreezeTTS 2, Qwen3-TTS, MOSS-TTS-Nano, MOSS-Transcribe-Diarize and Qwen3-ASR. The Demo has [model-specific controls](docs/build/android.md#demo-model-workflows) for these families. To change the compiled model set, set `ANDROID_DEMO_MODELS` to a comma-separated list of CMake model targets when invoking `build_native.sh` and supply any required native/data dependencies.
 
 #### Reference-audio voice cloning
 

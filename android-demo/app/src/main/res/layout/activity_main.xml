@@ -253,7 +253,7 @@
                 android:textSize="17sp" />
 
             <LinearLayout
-                android:id="@+id/voiceDescriptionContainer"
+                android:id="@+id/synthesisParametersContainer"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
@@ -277,6 +277,7 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/asrAudioHelp"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
@@ -304,6 +305,13 @@
                 android:textColor="@color/secondary"
                 android:textIsSelectable="true"
                 android:textSize="14sp" />
+
+            <LinearLayout
+                android:id="@+id/transcriptionParametersContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout
@@ -315,6 +323,7 @@
             android:visibility="gone">
 
             <TextView
+                android:id="@+id/referenceTitle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/reference_title"

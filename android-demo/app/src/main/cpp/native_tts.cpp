@@ -20,6 +20,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -741,10 +742,15 @@ Java_com_audiocpp_ttsdemo_NativeTts_synthesize(
                                 "Voice reference: %zu frames, %d Hz, %d channels",
                                 reference_frames, wav.sample_rate, wav.channels);
         }
+        const bool index_tts = std::string_view(audiocpp_model_family(g_model)) == "index_tts2";
         for (const auto & input : inputs) {
             if (input.scope == AUDIOCPP_OPTION_SCOPE_REQUEST) {
-                check(audiocpp_request_set_option(request.value, input.key.c_str(), input.value.c_str()),
-                      "设置请求参数");
+                if (index_tts && input.key == "emotion_text") {
+                    check(audiocpp_request_set_emotion(request.value, input.value.c_str()), "设置情绪文字");
+                } else {
+                    check(audiocpp_request_set_option(request.value, input.key.c_str(), input.value.c_str()),
+                          "设置请求参数");
+                }
             }
         }
 

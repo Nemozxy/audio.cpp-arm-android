@@ -57,7 +57,7 @@ runtime::CapabilitySet capabilities(const Qwen3TTSAssets & assets) {
     return out;
 }
 
-runtime::ModelCliInterface cli(const Qwen3TTSAssets &) {
+runtime::ModelCliInterface cli(const Qwen3TTSAssets & assets) {
     runtime::ModelCliInterface out;
     out.request_options = {
         {"stream_chunk_policy", "grow|fixed", "Streaming codec chunk schedule: grow starts with one frame and doubles to stream_frames_per_event; fixed uses that size throughout. Ignored offline.", false, "grow"},
@@ -76,10 +76,26 @@ runtime::ModelCliInterface cli(const Qwen3TTSAssets &) {
         {"seed", "int", "Codec sampling seed; omitted requests choose a random seed.", false, std::nullopt, "0", "4294967295"},
         {"reference_text", "string", "Transcript matching the reference audio for Base voice cloning; required unless x_vector_only_mode=true.", false},
         {"x_vector_only_mode", "bool", "Use only the speaker embedding for Base voice cloning instead of ICL reference codec prompting; default false.", false, "false"},
-        {"instruct", "string", "Optional natural-language voice or style instruction for VoiceDesign and CustomVoice variants; empty instructions are accepted.", false},
-        {"voice_id", "aiden|dylan|eric|ono_anna|ryan|serena|sohee|uncle_fu|vivian", "Named preset speaker from the CustomVoice checkpoint. These are the official checkpoint's presets; available names are determined by the loaded checkpoint. Legacy speaker remains accepted.", false},
         {"text_chunk_size", "int", "Maximum UTF-8 codepoints per long-form text chunk; default 8192.", false, "8192", "1"},
     };
+    if (assets.config.variant == Qwen3TTSVariant::CustomVoice) {
+        std::vector<std::string> speakers;
+        for (const auto & entry : assets.config.talker.speaker_id) {
+            speakers.push_back(entry.first);
+        }
+        std::sort(speakers.begin(), speakers.end());
+        std::string choices;
+        for (const auto & speaker : speakers) {
+            if (!choices.empty()) choices += '|';
+            choices += speaker;
+        }
+        out.request_options.push_back({"voice_id", std::move(choices),
+            "Named preset speaker from the loaded CustomVoice checkpoint. Legacy speaker remains accepted.", false});
+    }
+    if (assets.config.variant != Qwen3TTSVariant::Base) {
+        out.request_options.push_back({"instruct", "string",
+            "Optional natural-language voice or style instruction.", false});
+    }
     out.session_options = {
         {"qwen3_tts.lora", "path", "PEFT LoRA adapter directory or checkpoint file; optional speaker_embedding and tts_config.json sidecars provide a trained custom voice.", false},
         {"qwen3_tts.lora_scale", "float", "Multiplier for the adapter's alpha/r scaling; default 1.", false, "1"},

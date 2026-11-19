@@ -27,6 +27,7 @@ import android.widget.ProgressBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -113,7 +114,9 @@ public final class MainActivity extends Activity {
     private ProgressBar modelProgress;
     private TextView modelName;
     private TextView modelStatus;
+    private TextView referenceTitle;
     private TextView referenceStatus;
+    private TextView asrAudioHelp;
     private TextView asrAudioStatus;
     private TextView statusText;
     private TextView transcriptTitle;
@@ -169,7 +172,9 @@ public final class MainActivity extends Activity {
         inferenceControls = findViewById(R.id.inferenceControls);
         modelName = findViewById(R.id.modelName);
         modelStatus = findViewById(R.id.modelStatus);
+        referenceTitle = findViewById(R.id.referenceTitle);
         referenceStatus = findViewById(R.id.referenceStatus);
+        asrAudioHelp = findViewById(R.id.asrAudioHelp);
         asrAudioStatus = findViewById(R.id.asrAudioStatus);
         statusText = findViewById(R.id.statusText);
         transcriptTitle = findViewById(R.id.transcriptTitle);
@@ -179,7 +184,8 @@ public final class MainActivity extends Activity {
         asrInputSection = findViewById(R.id.asrInputSection);
         taskSpinner = findViewById(R.id.taskSpinner);
         parameterPanel = new ParameterPanel(this, findViewById(R.id.parametersContainer),
-                findViewById(R.id.referenceParametersContainer), findViewById(R.id.voiceDescriptionContainer));
+                findViewById(R.id.referenceParametersContainer), findViewById(R.id.synthesisParametersContainer),
+                findViewById(R.id.transcriptionParametersContainer));
 
         modelLibrary = new ModelLibrary(getFilesDir());
         // Do not touch active transfers if only the Activity is recreated.
@@ -272,8 +278,14 @@ public final class MainActivity extends Activity {
                 JSONObject inspection = new JSONObject(NativeTts.inspectModel(target.getAbsolutePath()));
                 String family = inspection.getString("family");
                 List<ModelOption> options = ModelOption.readOptions(inspection.getJSONArray("options"));
+                JSONArray languageArray = inspection.getJSONArray("languages");
+                String[] languages = new String[languageArray.length()];
+                for (int i = 0; i < languages.length; i++) languages[i] = languageArray.getString(i);
                 boolean supportsTts = inspection.optBoolean("supportsTts");
                 boolean supportsClon = inspection.optBoolean("supportsClon");
+                boolean supportsReference = inspection.optBoolean("supportsSpeakerReference");
+                DemoModelProfile profile = DemoModelProfile.forModel(family, supportsReference,
+                        inspection.optBoolean("supportsVoiceDesign"), inspection.optBoolean("supportsStyleCondition"));
                 boolean tts = supportsTts || supportsClon;
                 boolean asr = inspection.optBoolean("supportsAsr");
                 if (!tts && !asr) throw new IOException(getString(R.string.model_no_task));
@@ -286,8 +298,15 @@ public final class MainActivity extends Activity {
                     modelName.setText(target.getName() + "\n" + family);
                     nativeVersion = version;
                     modelFamily = family;
-                    requiresSpeakerReference = !supportsTts && supportsClon;
-                    speakerReferenceSupported = inspection.optBoolean("supportsSpeakerReference");
+                    requiresSpeakerReference = profile.requiresSpeakerReference() || (!supportsTts && supportsClon);
+                    speakerReferenceSupported = supportsReference;
+                    referenceTitle.setText(requiresSpeakerReference ? R.string.reference_title_required
+                            : R.string.reference_title);
+                    asrAudioHelp.setText(switch (profile) {
+                        case MOSS_ASR -> R.string.asr_input_help_moss;
+                        case QWEN_ASR -> R.string.asr_input_help_qwen;
+                        default -> R.string.asr_input_help;
+                    });
                     tasks.clear();
                     if (tts) {
                         tasks.add(new TaskEntry("tts", getString(R.string.task_tts)));
@@ -299,10 +318,11 @@ public final class MainActivity extends Activity {
                             android.R.layout.simple_spinner_item, tasks);
                     adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
                     taskSpinner.setAdapter(adapter);
-                    parameterPanel.setOptions(family, inspection.optBoolean("supportsVoiceDesign"), options);
+                    parameterPanel.setOptions(family, profile, languages, options);
                     modelReady = true;
                     modelProgress.setVisibility(View.GONE);
                     setBusy(false);
+                    updateAudioStatuses();
                     updateTaskUi();
                     modelStatus.setText(downloadMessage == null ? readyModelStatus()
                             : readyModelStatus() + "\n" + downloadMessage);
@@ -695,7 +715,7 @@ public final class MainActivity extends Activity {
         boolean referenceSelected = referenceFile.isFile();
         referenceStatus.setText(referenceSelected
                 ? getString(R.string.reference_selected, referenceName)
-                : getString(R.string.reference_empty));
+                : getString(requiresSpeakerReference ? R.string.reference_empty_required : R.string.reference_empty));
         clearReferenceButton.setVisibility(referenceSelected ? View.VISIBLE : View.GONE);
         asrAudioStatus.setText(asrAudioFile.isFile()
                 ? getString(R.string.asr_audio_selected, asrAudioName)
@@ -796,7 +816,7 @@ public final class MainActivity extends Activity {
             return;
         }
         if (requiresSpeakerReference && !referenceFile.isFile()) {
-            showError("当前模型需要参考音频才能进行语音克隆");
+            showError(getString(R.string.reference_empty_required));
             return;
         }
         ParameterPanel.Values options;

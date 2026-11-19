@@ -15,7 +15,7 @@ API=24
 if [[ "$BACKEND" == "vulkan" ]]; then API=28; fi
 ABI="arm64-v8a"
 BUILD_ROOT="${ANDROID_DEMO_BUILD_ROOT:-$ROOT_DIR/build/android-demo}"
-MODELS="${ANDROID_DEMO_MODELS:-moss_tts_nano,moss_transcribe_diarize,qwen3_tts,qwen3_asr}"
+MODELS="${ANDROID_DEMO_MODELS:-moss_tts_nano,moss_transcribe_diarize,qwen3_tts,qwen3_asr,index_tts2,breeze_tts}"
 DIST="$BUILD_ROOT/dist"
 JNILIBS="$APP_DIR/app/src/main/jniLibs/$ABI"
 

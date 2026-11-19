@@ -16,7 +16,10 @@ import android.widget.TextView;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /** Renders the option contract while keeping displayed defaults separate from explicit overrides. */
 final class ParameterPanel {
@@ -33,13 +36,17 @@ final class ParameterPanel {
     }
 
     private record Binding(ModelOption option, String label, boolean advanced, boolean referenceOnly,
-                           boolean positive, EditText textInput, Spinner choiceInput) {
+                           boolean positive, String[] choices, EditText textInput, Spinner choiceInput) {
         String value() {
             if (choiceInput != null) {
                 int selected = choiceInput.getSelectedItemPosition();
-                return selected > 0 ? option.choices[selected - 1] : "";
+                return selected > 0 ? choices[selected - 1] : "";
             }
             return textInput != null ? textInput.getText().toString() : "";
+        }
+
+        boolean isRequestOption(String key) {
+            return option.scope == ModelOption.REQUEST && key.equals(option.name);
         }
 
         void reset() {
@@ -54,37 +61,37 @@ final class ParameterPanel {
     private final Context context;
     private final LinearLayout container;
     private final LinearLayout referenceContainer;
-    private final LinearLayout voiceDescriptionContainer;
+    private final LinearLayout synthesisContainer;
+    private final LinearLayout transcriptionContainer;
     private final List<Binding> bindings = new ArrayList<>();
+    private DemoModelProfile profile = DemoModelProfile.GENERIC;
     private LinearLayout advancedContainer;
     private Button advancedButton;
     private boolean referenceAvailable;
     private int advancedCount;
 
     ParameterPanel(Context context, LinearLayout container, LinearLayout referenceContainer,
-                   LinearLayout voiceDescriptionContainer) {
+                   LinearLayout synthesisContainer, LinearLayout transcriptionContainer) {
         this.context = context;
         this.container = container;
         this.referenceContainer = referenceContainer;
-        this.voiceDescriptionContainer = voiceDescriptionContainer;
+        this.synthesisContainer = synthesisContainer;
+        this.transcriptionContainer = transcriptionContainer;
     }
 
-    void setOptions(String family, boolean supportsVoiceDesign, List<ModelOption> options) {
+    void setOptions(String family, DemoModelProfile profile, String[] languages, List<ModelOption> options) {
         clear();
+        this.profile = profile;
         advancedContainer = column();
         for (int scope : new int[]{ModelOption.REQUEST, ModelOption.SESSION, ModelOption.LOAD}) {
             boolean addedHeader = false;
             for (ModelOption option : options) {
                 if (option.scope != scope) continue;
-                if (OptionPresentation.isQwenVoiceDescription(family, supportsVoiceDesign, scope, option.name)) {
-                    addOption(voiceDescriptionContainer, family, option,
-                            OptionPresentation.QWEN_VOICE_DESCRIPTION, false, false);
-                    voiceDescriptionContainer.setVisibility(View.VISIBLE);
-                    continue;
-                }
-                OptionPresentation presentation = OptionPresentation.forOption(family, option);
-                boolean referenceOnly = scope == ModelOption.REQUEST && "reference_text".equals(option.name);
-                boolean advanced = !referenceOnly && (scope != ModelOption.REQUEST
+                var placement = profile.placement(scope, option.name);
+                if (placement == DemoModelProfile.Placement.HIDDEN) continue;
+                OptionPresentation presentation = OptionPresentation.forOption(family, profile, option);
+                boolean referenceOnly = placement == DemoModelProfile.Placement.REFERENCE;
+                boolean advanced = placement == DemoModelProfile.Placement.DEFAULT && (scope != ModelOption.REQUEST
                         || !(presentation.common() || option.requiresInput()));
                 if (advanced && !addedHeader) {
                     int header = switch (scope) {
@@ -97,8 +104,14 @@ final class ParameterPanel {
                     advancedContainer.addView(title, matchWrap());
                     addedHeader = true;
                 }
-                LinearLayout parent = referenceOnly ? referenceContainer : advanced ? advancedContainer : container;
-                addOption(parent, family, option, presentation, referenceOnly, advanced);
+                LinearLayout parent = switch (placement) {
+                    case SYNTHESIS -> synthesisContainer;
+                    case TRANSCRIPTION -> transcriptionContainer;
+                    case REFERENCE -> referenceContainer;
+                    default -> advanced ? advancedContainer : container;
+                };
+                String[] choices = profile.choiceValues(scope, option.name, option.choices, languages);
+                addOption(parent, family, option, presentation, referenceOnly, advanced, choices);
                 if (advanced) ++advancedCount;
             }
         }
@@ -116,7 +129,9 @@ final class ParameterPanel {
             setAdvancedExpanded(bindings.stream().anyMatch(binding ->
                     binding.advanced && binding.option.requiresInput()));
         }
-        if (options.isEmpty()) container.addView(text(context.getString(R.string.option_none), 14, false));
+        if (bindings.isEmpty()) container.addView(text(context.getString(R.string.option_none), 14, false));
+        synthesisContainer.setVisibility(synthesisContainer.getChildCount() == 0 ? View.GONE : View.VISIBLE);
+        transcriptionContainer.setVisibility(transcriptionContainer.getChildCount() == 0 ? View.GONE : View.VISIBLE);
         setReferenceAvailable(referenceAvailable);
     }
 
@@ -124,8 +139,10 @@ final class ParameterPanel {
         bindings.clear();
         container.removeAllViews();
         referenceContainer.removeAllViews();
-        voiceDescriptionContainer.removeAllViews();
-        voiceDescriptionContainer.setVisibility(View.GONE);
+        synthesisContainer.removeAllViews();
+        synthesisContainer.setVisibility(View.GONE);
+        transcriptionContainer.removeAllViews();
+        transcriptionContainer.setVisibility(View.GONE);
         advancedButton = null;
         advancedContainer = null;
         advancedCount = 0;
@@ -156,16 +173,23 @@ final class ParameterPanel {
     }
 
     Values collect() {
+        boolean embeddingOnly = profile == DemoModelProfile.QWEN_BASE && bindings.stream().anyMatch(binding ->
+                binding.isRequestOption("x_vector_only_mode") && "true".equals(binding.value()));
+        boolean needsReferenceText = profile.requiresReferenceText(referenceAvailable, embeddingOnly);
         int[] scopes = new int[bindings.size()];
         String[] keys = new String[bindings.size()];
         String[] values = new String[bindings.size()];
         int size = 0;
         for (Binding binding : bindings) {
             if (binding.referenceOnly && !referenceAvailable) continue;
+            if (embeddingOnly && binding.isRequestOption("reference_text")) continue;
             ModelOption option = binding.option;
             String value = binding.value();
             if (value.trim().isEmpty()) {
-                if (option.requiresInput()) {
+                if (binding.isRequestOption("reference_text") && needsReferenceText) {
+                    throw invalid(binding, R.string.option_reference_text_required);
+                }
+                if (requiresInput(option)) {
                     throw invalid(binding, option.kind == ModelOption.Kind.LIST
                             ? R.string.option_list_unsupported : R.string.option_required);
                 }
@@ -193,6 +217,11 @@ final class ParameterPanel {
         return new Values(Arrays.copyOf(scopes, size), Arrays.copyOf(keys, size), Arrays.copyOf(values, size));
     }
 
+    private boolean requiresInput(ModelOption option) {
+        return option.requiresInput() || (option.scope == ModelOption.REQUEST
+                && profile.requiresPresetVoice() && "voice_id".equals(option.name));
+    }
+
     private IllegalArgumentException invalid(Binding binding, int message) {
         return invalid(binding, context.getString(message));
     }
@@ -202,6 +231,8 @@ final class ParameterPanel {
         if (binding.textInput != null) {
             binding.textInput.requestFocus();
             binding.textInput.setError(message);
+        } else if (binding.choiceInput != null) {
+            binding.choiceInput.requestFocus();
         }
         return new IllegalArgumentException(binding.label + "：" + message);
     }
@@ -213,28 +244,29 @@ final class ParameterPanel {
     }
 
     private void addOption(LinearLayout parent, String family, ModelOption option, OptionPresentation presentation,
-                           boolean referenceOnly, boolean advanced) {
+                           boolean referenceOnly, boolean advanced, String[] choices) {
         String key = option.key(family);
         String name = presentation.label() == 0 ? key : context.getString(presentation.label());
-        TextView label = text(name + (option.requiresInput() ? " *" : ""), 15, true);
+        boolean required = requiresInput(option);
+        TextView label = text(name + (required ? " *" : ""), 15, true);
         label.setPadding(0, dp(12), 0, 0);
         parent.addView(label, matchWrap());
-        boolean voiceDescription = parent == voiceDescriptionContainer;
-        if (!voiceDescription) {
-            String help = presentation.help() == 0 ? option.description : context.getString(presentation.help());
-            addDetail(parent, help, 13);
-        }
+        int hint = presentation.hint();
+        String help = presentation.help() != 0 ? context.getString(presentation.help())
+                : (hint == 0 && presentation.label() != R.string.option_preset_voice) ? option.description : "";
+        addDetail(parent, help, 13);
 
-        String defaultLabel = option.requiresInput() ? context.getString(R.string.option_value_required)
-                : context.getString(R.string.option_use_default);
+        boolean languagePicker = profile.hasLanguagePicker(option.scope, option.name) && choices.length > 0;
+        String defaultLabel = context.getString(required ? R.string.option_value_required
+                : languagePicker ? R.string.option_auto_language : R.string.option_use_default);
         EditText input = null;
         Spinner spinner = null;
-        if (option.choices.length > 0) {
+        if (choices.length > 0) {
             List<String> labels = new ArrayList<>();
-            labels.add(option.hasDefault && !option.defaultValue.isEmpty()
+            labels.add(!languagePicker && option.hasDefault && !option.defaultValue.isEmpty()
                     ? context.getString(R.string.option_choice_default, choiceLabel(option, option.defaultValue))
                     : defaultLabel);
-            for (String value : option.choices) labels.add(choiceLabel(option, value));
+            for (String value : choices) labels.add(languagePicker ? languageLabel(value) : choiceLabel(option, value));
             spinner = new Spinner(context, Spinner.MODE_DIALOG);
             spinner.setPrompt(name);
             spinner.setMinimumHeight(dp(48));
@@ -272,18 +304,18 @@ final class ParameterPanel {
             input.setTextSize(15);
             input.setTextColor(context.getColor(R.color.primary));
             input.setHintTextColor(context.getColor(R.color.secondary));
-            input.setHint(voiceDescription ? context.getString(R.string.option_voice_description_hint) : defaultLabel);
+            input.setHint(hint == 0 ? defaultLabel : context.getString(hint));
             input.setBackgroundResource(R.drawable.input_background);
             input.setPadding(dp(12), dp(10), dp(12), dp(10));
             attachControl(parent, label, input);
 
-            String defaultText = option.hasDefault && !option.defaultValue.isEmpty()
+            String defaultText = hint == 0 && option.hasDefault && !option.defaultValue.isEmpty()
                     ? context.getString(R.string.option_default_value, option.defaultValue) : "";
             String range = rangeText(option, presentation.positive());
             addDetail(parent, !defaultText.isEmpty() && !range.isEmpty() ? defaultText + " · " + range
                     : defaultText + range, 12);
         }
-        bindings.add(new Binding(option, name, advanced, referenceOnly, presentation.positive(), input, spinner));
+        bindings.add(new Binding(option, name, advanced, referenceOnly, presentation.positive(), choices, input, spinner));
     }
 
     private void attachControl(LinearLayout parent, TextView label, View control) {
@@ -309,7 +341,39 @@ final class ParameterPanel {
             };
             if (label != 0) return context.getString(label);
         }
+        if (profile == DemoModelProfile.QWEN_ASR && "audio_chunk_mode".equals(option.name)) {
+            int label = switch (value) {
+                case "auto" -> R.string.option_audio_chunk_auto;
+                case "fixed" -> R.string.option_audio_chunk_fixed;
+                case "none" -> R.string.option_audio_chunk_none;
+                default -> 0;
+            };
+            if (label != 0) return context.getString(label);
+        }
         return value;
+    }
+
+    private static final Map<String, String> LANGUAGE_LABELS = languageLabels();
+
+    private static Map<String, String> languageLabels() {
+        Map<String, String> labels = new HashMap<>();
+        for (String code : Locale.getISOLanguages()) {
+            Locale locale = Locale.forLanguageTag(code);
+            String label = locale.getDisplayLanguage(Locale.SIMPLIFIED_CHINESE);
+            labels.put(code, label);
+            labels.put(locale.getDisplayLanguage(Locale.ENGLISH).toLowerCase(Locale.ROOT), label);
+        }
+        for (String code : new String[]{"yue", "fil"}) {
+            Locale locale = Locale.forLanguageTag(code);
+            String label = locale.getDisplayLanguage(Locale.SIMPLIFIED_CHINESE);
+            labels.put(code, label);
+            labels.put(locale.getDisplayLanguage(Locale.ENGLISH).toLowerCase(Locale.ROOT), label);
+        }
+        return labels;
+    }
+
+    private static String languageLabel(String value) {
+        return LANGUAGE_LABELS.getOrDefault(value.toLowerCase(Locale.ROOT), value);
     }
 
     private String rangeText(ModelOption option, boolean positive) {
