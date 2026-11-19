@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace engine::core {
@@ -17,9 +18,24 @@ ExecutionContext::ExecutionContext(const BackendConfig & config, float moe_cpu_s
     if (backend_ != nullptr && config_.threads > 0) {
         set_backend_threads(backend_, config_.threads);
     }
+    if (backend_ != nullptr) {
+        debug::timing_log_scalar("backend.name", std::string_view{ggml_backend_name(backend_)});
+        debug::timing_log_scalar("backend.fallback_policy",
+            std::string_view{"single-backend; unsupported graph operations fail"});
+    }
     ggml_backend_dev_t device = backend_ == nullptr ? nullptr : ggml_backend_get_device(backend_);
+    if (device != nullptr) {
+        ggml_backend_reg_t device_reg = ggml_backend_dev_backend_reg(device);
+        debug::timing_log_scalar("backend.registry",
+            std::string_view{device_reg != nullptr ? ggml_backend_reg_name(device_reg) : "unknown"});
+        debug::timing_log_scalar("backend.device_name", std::string_view{ggml_backend_dev_name(device)});
+        debug::timing_log_scalar("backend.device", std::string_view{ggml_backend_dev_description(device)});
+        debug::timing_log_scalar("backend.device_type",
+            static_cast<int64_t>(ggml_backend_dev_type(device)));
+        debug::timing_log_scalar("backend.device_index", static_cast<int64_t>(config_.device));
+    }
     if (device != nullptr && ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
-        debug::timing_log_scalar("backend.cpu.device", ggml_backend_dev_description(device));
+        debug::timing_log_scalar("backend.cpu.device", std::string_view{ggml_backend_dev_description(device)});
         debug::timing_log_scalar("backend.cpu.threads", static_cast<int64_t>(config_.threads));
         ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(device);
         auto get_features = reinterpret_cast<ggml_backend_get_features_t>(

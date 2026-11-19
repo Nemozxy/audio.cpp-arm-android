@@ -109,6 +109,15 @@ def parse(path: Path) -> dict[str, object]:
         values = timings.get(key)
         if values:
             result[output] = values[-1]
+    for output, key in {
+        "backend_name": "backend.name",
+        "backend_registry": "backend.registry",
+        "backend_device": "backend.device",
+        "backend_device_type": "backend.device_type",
+    }.items():
+        values = timings.get(key)
+        if values:
+            result[output] = values[-1]
     if kernels:
         result["kernel_hits"] = kernels
     if op_profiles:
@@ -145,7 +154,8 @@ def main() -> None:
     if args.csv:
         columns = [
             "variant", "report", "run.task", "device.model", "device.soc_model", "run.threads",
-            "run.profiling", "cpu_arm_arch", "cpu_dotprod", "cpu_fp16_va", "cpu_i8mm",
+            "run.backend", "run.profiling", "backend_name", "backend_registry", "backend_device",
+            "backend_device_type", "cpu_arm_arch", "cpu_dotprod", "cpu_fp16_va", "cpu_i8mm",
             "cpu_repack", "cpu_kleidiai", "hwcap_AT_HWCAP", "hwcap_AT_HWCAP2", "hwcap_fphp",
             "hwcap_asimdhp", "hwcap_asimddp", "hwcap_i8mm", "total_ms", "inference_ms",
             "encoder_ms", "prefill_ms", "decode_ms", "decode_tokens", "decode_mean_ms",

@@ -4,6 +4,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+    # Native Windows CMake cannot resolve /d/... or /e/... source paths.
+    REPO_ROOT="$(cygpath -am "$REPO_ROOT")"
+fi
 
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 ABIS="arm64-v8a"
@@ -110,6 +114,10 @@ case "$BACKEND" in
     vulkan) VULKAN="ON" ;;
     *) echo "--backend must be cpu or vulkan." >&2; exit 1 ;;
 esac
+if [[ "$VULKAN" == "ON" ]] && (( API < 28 )); then
+    echo "The vendored ggml Vulkan backend requires --api 28 or newer." >&2
+    exit 1
+fi
 case "$KLEIDIAI" in
     ON|OFF) ;;
     *) echo "--kleidiai must be ON or OFF." >&2; exit 1 ;;
@@ -146,6 +154,21 @@ for tool in "$STRIP_BIN" "$READELF_BIN"; do
         exit 1
     fi
 done
+
+VULKAN_GLSLC=""
+if [[ "$VULKAN" == "ON" ]]; then
+    VULKAN_GLSLC="$NDK/shader-tools/$HOST_TAG/glslc"
+    if [[ "$HOST_TAG" == "windows-x86_64" ]]; then
+        VULKAN_GLSLC="$VULKAN_GLSLC.exe"
+    fi
+    if [[ ! -f "$VULKAN_GLSLC" ]]; then
+        echo "NDK Vulkan shader compiler not found: $VULKAN_GLSLC" >&2
+        exit 1
+    fi
+    if command -v cygpath >/dev/null 2>&1; then
+        VULKAN_GLSLC="$(cygpath -am "$VULKAN_GLSLC")"
+    fi
+fi
 
 GENERATOR=""
 NINJA_PROGRAM=""
@@ -242,6 +265,43 @@ build_abi() {
     if [[ -n "$ARM_ARCH" ]]; then
         cmake_cmd+=(-DGGML_CPU_ARM_ARCH="$ARM_ARCH")
     fi
+    if [[ "$VULKAN" == "ON" ]]; then
+        local vulkan_sysroot="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/sysroot"
+        local vulkan_include="${VULKAN_HEADERS_INCLUDE:-$vulkan_sysroot/usr/include}"
+        local vulkan_library="$vulkan_sysroot/usr/lib/$triple/$API/libvulkan.so"
+        if [[ ! -f "$vulkan_include/vulkan/vulkan.hpp" ]]; then
+            echo "Vulkan C++ headers not found: $vulkan_include/vulkan/vulkan.hpp" >&2
+            echo "Set VULKAN_HEADERS_INCLUDE to a Vulkan-Headers include directory." >&2
+            exit 1
+        fi
+        if [[ ! -f "$vulkan_include/spirv/unified1/spirv.hpp" &&
+              ! -f "$vulkan_include/spirv-headers/spirv.hpp" &&
+              ! -f "$vulkan_include/spirv.hpp" ]]; then
+            echo "SPIR-V headers not found beside $vulkan_include/vulkan" >&2
+            echo "Merge the matching SPIRV-Headers include tree into VULKAN_HEADERS_INCLUDE." >&2
+            exit 1
+        fi
+        if [[ ! -f "$vulkan_library" ]]; then
+            echo "Android Vulkan loader not found: $vulkan_library" >&2
+            exit 1
+        fi
+        if command -v cygpath >/dev/null 2>&1; then
+            vulkan_include="$(cygpath -am "$vulkan_include")"
+            vulkan_library="$(cygpath -am "$vulkan_library")"
+        fi
+        cmake_cmd+=(
+            -DVulkan_GLSLC_EXECUTABLE="$VULKAN_GLSLC"
+            -DVulkan_INCLUDE_DIR="$vulkan_include"
+            -DVulkan_LIBRARY="$vulkan_library"
+        )
+        if [[ -n "${GGML_VULKAN_SHADERS_GEN_TOOLCHAIN:-}" ]]; then
+            local host_toolchain="$GGML_VULKAN_SHADERS_GEN_TOOLCHAIN"
+            if command -v cygpath >/dev/null 2>&1; then
+                host_toolchain="$(cygpath -am "$host_toolchain")"
+            fi
+            cmake_cmd+=(-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN="$host_toolchain")
+        fi
+    fi
     if [[ -n "$GENERATOR" ]]; then
         cmake_cmd+=(-G "$GENERATOR" -DCMAKE_MAKE_PROGRAM="$NINJA_PROGRAM")
     fi
@@ -296,6 +356,12 @@ build_abi() {
     if ! "$READELF_BIN" -d "$jni_dir/libaudiocpp.so" | awk '/NEEDED.*libc\+\+_shared\.so/{found=1} END{exit !found}'; then
         echo "libaudiocpp.so does not declare libc++_shared.so for $abi" >&2
         exit 1
+    fi
+    if [[ "$VULKAN" == "ON" ]]; then
+        if ! "$READELF_BIN" -d "$jni_dir/libaudiocpp.so" | awk '/NEEDED.*libvulkan\.so/{found=1} END{exit !found}'; then
+            echo "Vulkan build does not declare libvulkan.so for $abi" >&2
+            exit 1
+        fi
     fi
     if ! "$READELF_BIN" --dyn-syms --wide "$jni_dir/libaudiocpp.so" | awk '/audiocpp_abi_version/{found=1} END{exit !found}'; then
         echo "C ABI symbols are missing for $abi" >&2
