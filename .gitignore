@@ -57,3 +57,7 @@ docs/FALCON_H1_0.1B_PORT_PLAN.md
 /android-demo/local.properties
 /android-demo/app/src/main/assets/models/*.gguf
 /android-demo/app/src/main/jniLibs/
+
+# Local Android benchmark inputs, raw reports and debugging notes
+/ARM_test/
+/docs/ARM-HANDOFF.md

@@ -42,11 +42,29 @@ Build both ARM ABIs:
 scripts/build_android.sh --abi arm64-v8a,armeabi-v7a
 ```
 
-Enable Vulkan:
+Enable Vulkan while retaining the CPU backend and its Repack support:
 
 ```bash
-scripts/build_android.sh --abi arm64-v8a --backend vulkan
+scripts/build_android.sh --abi arm64-v8a --api 28 --backend vulkan
 ```
+
+ggml discovers the NDK's `glslc` and compiles shaders into C++ sources on the build host. The Android device needs only its system Vulkan loader and a compatible driver; it does not need a Vulkan SDK. The NDK supplies the C headers and Android loader, but not the `vulkan/vulkan.hpp` and SPIR-V headers required by ggml. If they are absent, obtain matching Khronos Vulkan-Headers and SPIR-V-Headers, combine their `include` trees in one dependency prefix, and set `VULKAN_HEADERS_INCLUDE` to that prefix's `include` directory. For NDK r28.1, use the `v1.3.275` Vulkan headers and `vulkan-sdk-1.3.275.0` SPIR-V headers:
+
+```bash
+VULKAN_HEADERS_INCLUDE=/path/to/Vulkan-Headers/include \
+  scripts/build_android.sh --abi arm64-v8a --api 28 --backend vulkan
+```
+
+The host also needs a native C++ compiler for `vulkan-shaders-gen`. On Windows, use a configured Visual Studio MSVC environment and, when cross-compiling from a non-MSVC shell, pass a native host toolchain through `GGML_VULKAN_SHADERS_GEN_TOOLCHAIN`:
+
+```bash
+GGML_VULKAN_SHADERS_GEN_TOOLCHAIN=/path/to/windows-host-msvc.cmake \
+  scripts/build_android.sh --abi arm64-v8a --api 28 --backend vulkan
+```
+
+The toolchain must select host `cl.exe`, not the NDK's Android Clang. Vulkan builds require API 28 or newer because the vendored ggml directly links `vkGetPhysicalDeviceFeatures2`; the NDK's ARM64 loader first exports that symbol at API 28. CPU-only builds retain the API 24 minimum. When packaging the demo for Vulkan, pass `-PaudiocppMinSdk=28` to Gradle so its manifest matches the native dependency.
+
+A build with the NDK r28.1 `glslc` currently falls back to the scalar shader path: that compiler rejects cooperative matrix, cooperative matrix2, integer dot product, and bfloat16 feature tests. This is a shader-compiler capability limitation, not evidence that a device lacks the corresponding Vulkan features.
 
 For a smaller application binary, build only the model families you need. Model dependencies are resolved by the same composite-build logic used on desktop:
 
@@ -127,7 +145,7 @@ The helper packages the core runtime, not every optional model-specific third-pa
 
 ## Demo model discovery, custom GGUF import, and parameter scopes
 
-The demo passes a null family hint to `audiocpp_model_load`, allowing the registry to identify a compatible model. After loading, it uses `audiocpp_model_supports()` to gate offline TTS / cloning and ASR tasks, then enumerates `AUDIOCPP_OPTION_SCOPE_REQUEST`, `AUDIOCPP_OPTION_SCOPE_SESSION`, and `AUDIOCPP_OPTION_SCOPE_LOAD` through `audiocpp_model_option_count()` / `audiocpp_model_option()`. Java builds controls from the returned names, descriptions, defaults, value types, and ranges; it does not keep a per-family option table.
+The demo passes a null family hint to `audiocpp_model_load`, allowing the registry to identify a compatible model. After loading, it uses `audiocpp_model_supports()` to gate offline TTS / cloning and ASR tasks, then enumerates `AUDIOCPP_OPTION_SCOPE_REQUEST`, `AUDIOCPP_OPTION_SCOPE_SESSION`, and `AUDIOCPP_OPTION_SCOPE_LOAD` through `audiocpp_model_option_count()` / `audiocpp_model_option()`. Java uses the model metadata for control types, allowed choices, defaults, and numeric bounds. `OptionPresentation` adds Chinese labels, help and placement for selected model options; unrecognized options still render from metadata under Advanced, unless required. The demo exposes list options as read-only because its JNI option path accepts scalars only.
 
 Empty controls preserve model defaults. Explicit request values are applied with `audiocpp_request_set_option()`. A changed session-option signature recreates the session, while a changed load-option signature reloads the model and recreates the session. The native bridge compares sorted key/value signatures so changing request-only fields does not force either rebuild.
 
@@ -141,7 +159,7 @@ On MuMu (Android 12 / API 32 with ARM translation), setting the discovered `max_
 
 The reference-audio controls are gated by `audiocpp_model_supports_speaker_reference()` rather than a family-name check. `ACTION_OPEN_DOCUMENT` imports the selected WAV into app-private storage, so no broad storage permission is needed. The JNI target compiles `src/framework/audio/wav_reader.cpp` alongside its bridge and passes the decoded interleaved float PCM to `audiocpp_request_set_voice_audio()`.
 
-A reference selects `clon/offline` when that task is available; no reference selects `tts/offline`. The task is part of the native session signature, so adding or removing a reference recreates the session. A model's discovered `reference_text` request option carries the transcript when one is available. For MOSS-TTS-Nano the transcript is optional.
+A reference selects `clon/offline` when that task is available; no reference selects `tts/offline`. The task is part of the native session signature, so adding or removing a reference recreates the session. A model's discovered `reference_text` request option is shown next to the selected reference audio and submitted only with that audio. Replacing or removing the recording clears the transcript. For MOSS-TTS-Nano the transcript is optional.
 
 The complete picker-to-clone flow was exercised on MuMu with a 7.616-second, 48 kHz stereo Chinese reference and its transcript. The request created `clon/offline`, consumed 365,568 reference frames, and generated a non-silent 4.48-second stereo WAV followed by playback. Removing the reference then created `tts/offline` and passed a separate `max_tokens=30` synthesis regression.
 
@@ -233,6 +251,49 @@ scripts/build_android.sh \
 ```
 
 This recommendation does not enable KleidiAI or imply runtime dispatch. TTS timings are intentionally not ranked here: the runs produced different audio lengths, and MOSS-TTS-Nano output accuracy was not controlled closely enough for a strict comparison.
+
+## Vulkan versus CPU validation
+
+The Vulkan demo build exposes **CPU I8MM** and **Vulkan GPU** selectors in the same APK. Both paths share the same model loader, session options, request options, input conversion, and thread setting. Changing the selector recreates the session. The selected backend is captured in the exported report as `run.backend`; an inference already in progress cannot be changed from the UI.
+
+Build the K80 candidate with 4-thread I8MM, DOTPROD, and FP16 CPU support, KleidiAI off, and Vulkan enabled:
+
+```bash
+bash android-demo/build_native.sh /path/to/android-ndk \
+  'armv8.6-a+i8mm+dotprod+fp16' OFF vulkan
+```
+
+Use this package only on devices whose HWCAP report confirms all three CPU extensions. Install over the existing demo with `adb install -r` to retain the same imported WAV. Select the ASR model, keep 4 threads and all model options unchanged, and compare CPU and Vulkan on the same 382,736-frame, 16 kHz mono input. Record both cold and warm runs, and compare the transcript before interpreting inference times. Then repeat TTS with identical text and sampling parameters, recording token generation, codec graph decode, output frames, and audio duration separately.
+
+A successful session-creation message alone is not GPU-offload evidence. For a detailed run, the exported report must identify the Vulkan registry, the Adreno device description and GPU device type, and model weights in Vulkan buffers. Enable **detailed performance analysis** only for a separate run: it sets `GGML_VK_PERF_LOGGER=1` and `GGML_VK_SYNC_LOGGER=1` before Vulkan initialization. ggml writes its timestamp and synchronization diagnostics to process standard error, not to the app's 4 MiB export buffer. Capture the complete device log around that run:
+
+```bash
+adb logcat -c
+# Perform exactly one detailed inference in the app.
+adb logcat -d > vulkan-detailed-logcat.txt
+```
+
+The demo creates one explicitly selected ggml backend per session. It does not use a scheduler that automatically assigns unsupported graph nodes to CPU. An unsupported operation therefore fails the run rather than providing a silent fallback node count. Model-weight buffer names, graph timestamps, transfer/readback stages, and synchronization logs must be evaluated together before claiming GPU execution or attributing a slowdown to transfers.
+
+Physical Adreno performance and precision are not established by compilation or by MuMu ARM translation. See the [on-device ASR results](../reports/android_arm64_asr_performance.md) for the measured CPU and Vulkan comparison. A hybrid Encoder-Vulkan / Decoder-CPU implementation was not tested.
+
+The Debug APK also accepts an ADB-controlled benchmark while the app is in the foreground with the device awake. Import the WAV in the Demo first. The receiver is absent from release builds and requires `android.permission.DUMP` (granted to the ADB shell):
+
+```bash
+adb shell am broadcast -n com.audiocpp.ttsdemo/.BenchmarkControlReceiver \
+  -a com.audiocpp.ttsdemo.BENCHMARK_CONTROL --es command run --es name cpu-t4 \
+  --es task asr --es backend cpu --ei threads 4 --ez profiling false
+```
+
+Wait for `cpu-t4.done` under the app-private `files/benchmark-results/` directory, then read the corresponding `cpu-t4.txt` with `adb shell run-as com.audiocpp.ttsdemo cat files/benchmark-results/cpu-t4.txt`. Raw reports and logcat can include transcriptions, file paths and device information. Keep them local and share only explicitly selected, non-identifying metrics.
+
+Package the demo with its matching API floor:
+
+```bash
+gradlew.bat assembleDebug -PaudiocppMinSdk=28 --no-daemon
+```
+
+The 2026-11-18 Windows build used NDK r28.1, Release `-O3 -DNDEBUG`, `GGML_CPU_ARM_ARCH=armv8.6-a+i8mm+dotprod+fp16`, `GGML_CPU_REPACK=ON`, `GGML_CPU_KLEIDIAI=OFF`, and Vulkan scalar shaders. ELF inspection confirmed AArch64, `NEEDED libvulkan.so`, `NEEDED libc++_shared.so`, and 244 `smmla` instructions in the packaged `libaudiocpp.so`. Instruction presence does not prove a runtime I8MM kernel hit. The APK contained both GGUF models and exactly matched the native library hash. It installed and launched on MuMu, identified the retained ASR model, and displayed both CPU I8MM and Vulkan GPU selectors; no model inference was benchmarked there. These are build and compatibility checks, not physical-device inference results.
 
 ## On-device smoke test
 
