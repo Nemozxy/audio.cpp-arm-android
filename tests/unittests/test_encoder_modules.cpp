@@ -8,6 +8,7 @@
 #include "engine/framework/modules/convnext_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/positional_modules.h"
+#include "engine/framework/modules/speech_encoders/whisper_embedding.h"
 #include "engine/framework/modules/structural_modules.h"
 #include "engine/framework/modules/weight_binding.h"
 #include "engine/framework/runtime/graph_optimizer.h"
@@ -1473,6 +1474,49 @@ void test_interpolate_align_corners() {
     require_allclose(runner.run_f32(single),{0},1.e-6F,"interpolation aligned singleton");
 }
 
+void test_whisper_attention_head_groups() {
+    using namespace engine;
+    CpuModuleRunner runner;
+    constexpr int64_t hidden = 12;
+    constexpr int64_t frames = 6;
+    constexpr int64_t mels = 3;
+    std::vector<core::TensorValue> parameters;
+    const auto parameter = [&](const core::TensorShape & shape) {
+        parameters.push_back(runner.make_f32(shape));
+        return parameters.back();
+    };
+    const auto norm = [&]() -> modules::NormWeights {
+        return {parameter(core::TensorShape::from_dims({hidden})),
+                parameter(core::TensorShape::from_dims({hidden}))};
+    };
+    const auto projection = [&](bool bias) -> modules::LinearWeights {
+        auto weight = parameter(core::TensorShape::from_dims({hidden, hidden}));
+        return {weight, bias ? std::optional{parameter(core::TensorShape::from_dims({hidden}))} : std::nullopt};
+    };
+    modules::WhisperEmbeddingWeights weights;
+    weights.conv1 = {parameter(core::TensorShape::from_dims({hidden, mels, 3})), parameter(core::TensorShape::from_dims({hidden}))};
+    weights.conv2 = {parameter(core::TensorShape::from_dims({hidden, hidden, 3})), parameter(core::TensorShape::from_dims({hidden}))};
+    weights.positional_embedding = parameter(core::TensorShape::from_dims({frames, hidden}));
+    weights.layers.push_back({
+        norm(), {projection(true), projection(false), projection(true), projection(true)}, norm(),
+        {parameter(core::TensorShape::from_dims({hidden * 4, hidden})), parameter(core::TensorShape::from_dims({hidden * 4})),
+         parameter(core::TensorShape::from_dims({hidden, hidden * 4})), parameter(core::TensorShape::from_dims({hidden}))}});
+    weights.final_norm = norm();
+
+    const auto input = runner.make_f32(core::TensorShape::from_dims({2, mels, frames * 2}));
+    modules::WhisperEmbeddingConfig config{mels, frames, hidden, 3, 1};
+    const auto full = modules::WhisperEmbeddingModule(config).build(runner.ctx, input, weights);
+    config.attention_heads_per_group = 2;
+    const auto grouped = modules::WhisperEmbeddingModule(config).build(runner.ctx, input, weights);
+    runner.allocate_tensors();
+    core::write_tensor_f32(input, make_patterned_f32(input.shape.num_elements(), 0.3F, 0.8F));
+    for (size_t i = 0; i < parameters.size(); ++i) {
+        const auto & tensor = parameters[i];
+        core::write_tensor_f32(tensor, make_patterned_f32(tensor.shape.num_elements(), 0.2F, 0.05F * (i + 1)));
+    }
+    require_allclose(runner.run_f32(grouped), runner.run_f32(full), 2.0e-5F, "Whisper attention head groups");
+}
+
 void test_batched_rope_matches_independent_rows() {
     using namespace engine;
     for (const int64_t batch : {1, 2, 5}) {
@@ -1528,6 +1572,7 @@ int main(int argc, char ** argv) {
         else if (argc != 1)
             throw std::runtime_error("Usage: encoder_module_test [--log FILE]");
         test_batched_rope_matches_independent_rows();
+        test_whisper_attention_head_groups();
         test_cuda_f16_lowerings_default_off();
         test_mul_optional_broadcasting();
         test_mul_preserved_views();

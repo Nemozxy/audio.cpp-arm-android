@@ -4,6 +4,7 @@
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -37,7 +38,8 @@ core::TensorValue whisper_attention(
     const core::TensorValue & input,
     const WhisperAttentionWeights & weights,
     int64_t hidden_size,
-    int64_t heads) {
+    int64_t heads,
+    int64_t heads_per_group) {
     const int64_t head_dim = hidden_size / heads;
     const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
     const LinearModule query({hidden_size, hidden_size, true});
@@ -53,14 +55,29 @@ core::TensorValue whisper_attention(
     auto q_heads = permute(ctx, q, {0, 2, 1, 3});
     auto k_heads = permute(ctx, k, {0, 2, 1, 3});
     auto v_heads = permute(ctx, v, {0, 2, 1, 3});
-    auto scores = matmul.build(ctx, q_heads, permute(ctx, k_heads, {0, 1, 3, 2}));
-    // Matches the active OpenAI Whisper SDPA path, which applies the head scale to q @ k^T.
-    scores = core::wrap_tensor(ggml_scale(ctx.ggml, scores.tensor, scale), scores.shape, GGML_TYPE_F32);
-    auto attn = core::wrap_tensor(
-        ggml_soft_max(ctx.ggml, ensure_contiguous(ctx, scores).tensor),
-        scores.shape,
-        GGML_TYPE_F32);
-    auto context = matmul.build(ctx, attn, v_heads);
+    const auto attend = [&](const core::TensorValue & query_heads,
+                            const core::TensorValue & key_heads,
+                            const core::TensorValue & value_heads) {
+        auto scores = matmul.build(ctx, query_heads, permute(ctx, key_heads, {0, 1, 3, 2}));
+        // OpenAI Whisper applies the head scale to q @ k^T.
+        scores = core::wrap_tensor(ggml_scale(ctx.ggml, scores.tensor, scale), scores.shape, GGML_TYPE_F32);
+        auto attn = core::wrap_tensor(
+            ggml_soft_max(ctx.ggml, ensure_contiguous(ctx, scores).tensor),
+            scores.shape,
+            GGML_TYPE_F32);
+        return matmul.build(ctx, attn, value_heads);
+    };
+
+    core::TensorValue context;
+    if (heads_per_group <= 0 || heads_per_group >= heads) {
+        context = attend(q_heads, k_heads, v_heads);
+    } else {
+        for (int64_t first = 0; first < heads; first += heads_per_group) {
+            const SliceModule slice({1, first, std::min(heads - first, heads_per_group)});
+            auto group = attend(slice.build(ctx, q_heads), slice.build(ctx, k_heads), slice.build(ctx, v_heads));
+            context = first == 0 ? group : ConcatModule({1}).build(ctx, context, group);
+        }
+    }
     context = permute(ctx, context, {0, 2, 1, 3});
     context = core::reshape_tensor(
         ctx,
@@ -82,7 +99,8 @@ core::TensorValue encoder_layer(
         GeluApproximation::ExactErf,
     });
     auto attn_input = norm.build(ctx, input, weights.attention_norm);
-    auto attn_out = whisper_attention(ctx, attn_input, weights.attention, config.n_audio_state, config.n_audio_head);
+    auto attn_out = whisper_attention(ctx, attn_input, weights.attention, config.n_audio_state,
+        config.n_audio_head, config.attention_heads_per_group);
     auto x = AddModule().build(ctx, input, attn_out);
     auto mlp_input = norm.build(ctx, x, weights.mlp_norm);
     auto mlp_out = mlp.build(ctx, mlp_input, weights.mlp);

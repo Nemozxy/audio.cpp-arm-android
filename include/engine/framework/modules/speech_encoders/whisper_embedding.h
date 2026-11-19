@@ -18,6 +18,7 @@ struct WhisperEmbeddingConfig {
     int64_t n_audio_head = 0;
     int64_t n_audio_layer = 0;
     float layer_norm_eps = 1.0e-5F;
+    int64_t attention_heads_per_group = 0;
 };
 
 struct WhisperAttentionWeights {

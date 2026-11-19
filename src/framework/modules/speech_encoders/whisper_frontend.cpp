@@ -269,7 +269,26 @@ struct WhisperFrontendComponent::State {
             build_ctx,
             GGML_TYPE_F32,
             core::TensorShape::from_dims({1, weights->config.n_mels, weights->config.n_audio_ctx * 2}));
-        output = WhisperEmbeddingModule(weights->config).build(build_ctx, input, weights->embedding);
+        auto graph_config = weights->config;
+        if (build_ctx.backend_type == core::BackendType::Vulkan) {
+            // Probe the dense attention score shape without allocating a device buffer.
+            const auto backend = weights->execution_context->backend();
+            auto heads = graph_config.n_audio_head;
+            for (; heads > 0; heads /= 2) {
+                auto * scores = ggml_new_tensor_3d(ctx, GGML_TYPE_F32,
+                    graph_config.n_audio_ctx, graph_config.n_audio_ctx, heads);
+                if (ggml_backend_supports_op(backend, ggml_soft_max(ctx, scores))) {
+                    break;
+                }
+            }
+            if (heads == 0) {
+                release_graph();
+                throw std::runtime_error("Vulkan cannot address a single Whisper attention head");
+            }
+            graph_config.attention_heads_per_group = heads;
+            debug::timing_log_scalar(component_config.name + ".graph.attention_heads_per_group", heads);
+        }
+        output = WhisperEmbeddingModule(graph_config).build(build_ctx, input, weights->embedding);
         ggml_set_output(output.tensor);
         graph = ggml_new_graph_custom(ctx, 65536, false);
         ggml_build_forward_expand(graph, output.tensor);
